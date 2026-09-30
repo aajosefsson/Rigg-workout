@@ -13,9 +13,7 @@ const load = async (key, fallback = null) => {
 const save = async (key, val) => {
   try {
     await setDoc(doc(db, "riggworkout", key), { value: val });
-  } catch (e) {
-    console.error("SAVE FAILED:", e);
-  }
+  } catch (e) {}
 };
 
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
