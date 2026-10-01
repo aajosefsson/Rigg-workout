@@ -161,13 +161,14 @@ const css = `
     background: rgba(15,10,6,0.88); backdrop-filter: blur(12px);
     border-bottom: 1px solid rgba(255,107,26,0.15);
   }
-  .nav-logo { font-family:'Barlow Condensed',sans-serif; font-size:1.5rem; font-weight:800; letter-spacing:0.08em; color:#FF6B1A; }
-  .nav-tabs { display:flex; gap:4px; }
+  .nav-logo { font-family:'Barlow Condensed',sans-serif; font-size:1.5rem; font-weight:800; letter-spacing:0.08em; color:#FF6B1A; white-space:nowrap; }
+  .nav-tabs { display:flex; gap:4px; flex-shrink:0; }
   .nav-tab {
     padding: 7px 18px; border-radius:6px; border:none; cursor:pointer;
     font-family:'Barlow',sans-serif; font-size:0.85rem; font-weight:600;
-    background: transparent; color: #8a7a6a; transition: all 0.2s;
+    background: transparent; color: #8a7a6a; transition: all 0.2s; white-space:nowrap;
   }
+  .short-label { display:none; }
   .nav-tab.active { background: rgba(255,107,26,0.15); color:#FF6B1A; }
   .nav-tab:hover:not(.active) { color:#f0ebe3; background:rgba(255,255,255,0.05); }
 
@@ -203,7 +204,7 @@ const css = `
   .grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
   .grid-3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:16px; }
   .flex { display:flex; } .flex-center { display:flex; align-items:center; }
-  .flex-between { display:flex; align-items:center; justify-content:space-between; }
+  .flex-between { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; }
   .flex-wrap { flex-wrap:wrap; }
   .gap-2{gap:8px;} .gap-3{gap:12px;} .gap-4{gap:16px;}
   .col{flex-direction:column;}
@@ -271,8 +272,15 @@ const css = `
   .modal-body { flex:1; overflow-y:auto; padding:18px 28px 28px; }
   @media(max-width:640px){
     .grid-2,.grid-3 { grid-template-columns:1fr; }
-    .nav-logo { font-size:1.2rem; }
     .admin-tab { padding:8px 12px; font-size:0.8rem; }
+  }
+  @media(max-width:480px){
+    .nav { padding:10px 14px; }
+    .nav-logo { font-size:1rem; }
+    .nav-tabs { gap:2px; }
+    .nav-tab { padding:6px 9px; font-size:0.75rem; }
+    .full-label { display:none; }
+    .short-label { display:inline; }
   }
 `;
 
@@ -433,7 +441,10 @@ export default function App() {
       <div className="app-root">
         <GrainBg />
         <nav className="nav">
-          <div className="nav-logo">⚡ RIGG WORKOUT</div>
+          <div className="nav-logo">
+            ⚡ <span className="full-label">RIGG WORKOUT</span>
+            <span className="short-label">RIGG</span>
+          </div>
           <div className="nav-tabs">
             <button
               className={`nav-tab ${view === "member" ? "active" : ""}`}
@@ -445,7 +456,8 @@ export default function App() {
               className={`nav-tab ${view === "admin" ? "active" : ""}`}
               onClick={() => setView("admin")}
             >
-              Coach Admin
+              <span className="full-label">Coach Admin</span>
+              <span className="short-label">Admin</span>
             </button>
           </div>
         </nav>
