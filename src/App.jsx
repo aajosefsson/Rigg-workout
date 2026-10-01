@@ -2253,7 +2253,6 @@ function MemberView({
       return "";
     }
   });
-  const [showNameSelect, setShowNameSelect] = useState(false);
   const [calMonth, setCalMonth] = useState({
     year: new Date().getFullYear(),
     month: new Date().getMonth(),
@@ -2284,13 +2283,46 @@ function MemberView({
   const wod = wodForDate(selectedDate);
   const period = periods.find((p) => p.workouts.some((w) => w.id === wod?.id));
   const sessionMems = wod ? getSessionMembers(wod.id) : [];
-  const isMemberInSession = !!(
+
+  const blockSavedKey = (block) => `${wod?.id}_${block.name}_${memberName}`;
+  const isBlockSaved = (block) =>
+    !!(wod && memberName && savedResults[blockSavedKey(block)]);
+  const allBlocksSaved =
     wod &&
     memberName &&
-    sessionMems.includes(memberName)
-  );
-  const hasSaved =
-    wod && memberName ? !!savedResults[`${wod.id}_${memberName}`] : false;
+    wod.blocks.length > 0 &&
+    wod.blocks.every(isBlockSaved);
+
+  const [openBlockIdx, setOpenBlockIdx] = useState(null);
+  const blockRefs = useRef([]);
+
+  // When the WoD or the selected member changes, jump to the first not-yet-logged block
+  useEffect(() => {
+    if (!wod || !memberName) {
+      setOpenBlockIdx(null);
+      return;
+    }
+    const firstIncomplete = wod.blocks.findIndex((b) => !isBlockSaved(b));
+    setOpenBlockIdx(firstIncomplete === -1 ? null : firstIncomplete);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wod?.id, memberName]);
+
+  const handleBlockDone = (bi) => {
+    const block = wod.blocks[bi];
+    setSavedResults((p) => ({ ...p, [blockSavedKey(block)]: true }));
+    const next = bi + 1;
+    if (next < wod.blocks.length) {
+      setOpenBlockIdx(next);
+      setTimeout(() => {
+        blockRefs.current[next]?.scrollIntoView({
+          behavior: "smooth",
+          block: "center",
+        });
+      }, 80);
+    } else {
+      setOpenBlockIdx(null);
+    }
+  };
 
   const touchStart = useRef(null);
   const handleTouchStart = (e) => {
@@ -2456,6 +2488,45 @@ function MemberView({
         </div>
       </div>
 
+      {/* Member selector — above the WoD card, always visible without scrolling */}
+      {wod && (
+        <div className="card mb-4" style={{ padding: "12px 18px" }}>
+          <div
+            className="flex-between"
+            style={{ flexWrap: "wrap", gap: "10px" }}
+          >
+            <label
+              htmlFor="member-select"
+              style={{
+                fontSize: "0.75rem",
+                color: "#8a7a6a",
+                fontWeight: 700,
+                textTransform: "uppercase",
+                letterSpacing: "0.06em",
+                margin: 0,
+              }}
+            >
+              Who are you?
+            </label>
+            <div style={{ maxWidth: "220px", flex: "1 1 180px" }}>
+              <select
+                id="member-select"
+                value={memberName}
+                onChange={(e) => setMemberName(e.target.value)}
+                style={{ fontWeight: 600 }}
+              >
+                <option value="">Select your name…</option>
+                {memberRoster.map((n) => (
+                  <option key={n} value={n}>
+                    {n}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* WoD card or empty state */}
       {wod ? (
         <div
@@ -2485,53 +2556,161 @@ function MemberView({
                   : "Past session"}
             </div>
           </div>
-          {wod.blocks.map((block, bi) => (
-            <div
-              key={bi}
-              style={{
-                marginBottom: bi < wod.blocks.length - 1 ? "24px" : 0,
-                paddingBottom: bi < wod.blocks.length - 1 ? "24px" : 0,
-                borderBottom:
-                  bi < wod.blocks.length - 1
-                    ? "1px solid rgba(255,255,255,0.06)"
-                    : undefined,
-              }}
-            >
-              <div className="flex-center gap-3 mb-2">
-                <div
-                  className="block-badge"
-                  style={{
-                    background: BLOCK_COLORS[block.name] || "#FF6B1A",
-                    color: "#fff",
-                  }}
-                >
-                  {block.name}
-                </div>
-                <span
-                  style={{
-                    fontFamily: "'Barlow Condensed',sans-serif",
-                    fontWeight: 700,
-                    fontSize: "1.1rem",
-                    letterSpacing: "0.04em",
-                  }}
-                >
-                  BLOCK {block.name}
-                </span>
-              </div>
-              <pre
+          {wod.blocks.map((block, bi) => {
+            const saved = isBlockSaved(block);
+            const open = openBlockIdx === bi;
+            return (
+              <div
+                key={bi}
+                ref={(el) => {
+                  blockRefs.current[bi] = el;
+                }}
                 style={{
-                  fontFamily: "'Barlow',sans-serif",
-                  fontSize: "0.95rem",
-                  whiteSpace: "pre-wrap",
-                  lineHeight: 1.7,
-                  color: "#e0d8ce",
-                  paddingLeft: "40px",
+                  marginBottom: bi < wod.blocks.length - 1 ? "24px" : 0,
+                  paddingBottom: bi < wod.blocks.length - 1 ? "24px" : 0,
+                  borderBottom:
+                    bi < wod.blocks.length - 1
+                      ? "1px solid rgba(255,255,255,0.06)"
+                      : undefined,
+                  scrollMarginTop: "80px",
                 }}
               >
-                {block.description}
-              </pre>
+                <div className="flex-center gap-3 mb-2">
+                  <div
+                    className="block-badge"
+                    style={{
+                      background: BLOCK_COLORS[block.name] || "#FF6B1A",
+                      color: "#fff",
+                    }}
+                  >
+                    {block.name}
+                  </div>
+                  <span
+                    style={{
+                      fontFamily: "'Barlow Condensed',sans-serif",
+                      fontWeight: 700,
+                      fontSize: "1.1rem",
+                      letterSpacing: "0.04em",
+                    }}
+                  >
+                    BLOCK {block.name}
+                  </span>
+                </div>
+                <pre
+                  style={{
+                    fontFamily: "'Barlow',sans-serif",
+                    fontSize: "0.95rem",
+                    whiteSpace: "pre-wrap",
+                    lineHeight: 1.7,
+                    color: "#e0d8ce",
+                    paddingLeft: "40px",
+                  }}
+                >
+                  {block.description}
+                </pre>
+
+                {memberName && (
+                  <div style={{ marginLeft: "40px", marginTop: "12px" }}>
+                    {saved ? (
+                      <button
+                        type="button"
+                        onClick={() => setOpenBlockIdx(bi)}
+                        style={{
+                          width: "100%",
+                          textAlign: "left",
+                          padding: "10px 14px",
+                          borderRadius: "8px",
+                          border: "1px solid rgba(80,200,80,0.25)",
+                          background: "rgba(80,200,80,0.06)",
+                          color: "#7dde7d",
+                          fontSize: "0.85rem",
+                          fontWeight: 600,
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                        }}
+                      >
+                        <span>✓ Results logged for Block {block.name}</span>
+                        <span style={{ color: "#8a7a6a", fontWeight: 500 }}>
+                          Edit
+                        </span>
+                      </button>
+                    ) : open ? (
+                      <div
+                        className="card"
+                        style={{
+                          border: "1px solid rgba(255,107,26,0.25)",
+                          padding: "16px",
+                        }}
+                      >
+                        <div className="grid-2">
+                          {(block.variables || []).map((v) => (
+                            <div key={v}>
+                              <label>{v}</label>
+                              <input
+                                value={getResult(
+                                  wod.id,
+                                  block.name,
+                                  memberName,
+                                  v,
+                                )}
+                                onChange={(e) =>
+                                  updateResult(
+                                    wod.id,
+                                    block.name,
+                                    memberName,
+                                    v,
+                                    e.target.value,
+                                  )
+                                }
+                                placeholder={`Enter ${v.toLowerCase()}`}
+                              />
+                            </div>
+                          ))}
+                        </div>
+                        <button
+                          className="btn btn-primary mt-3 w-full"
+                          style={{ justifyContent: "center" }}
+                          onClick={() => handleBlockDone(bi)}
+                        >
+                          ✓ Done —{" "}
+                          {bi < wod.blocks.length - 1
+                            ? `Next: Block ${wod.blocks[bi + 1].name}`
+                            : "Finish"}
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => setOpenBlockIdx(bi)}
+                      >
+                        Log Results for Block {block.name}
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+
+          {allBlocksSaved && (
+            <div
+              className="mt-4"
+              style={{
+                padding: "14px 18px",
+                textAlign: "center",
+                borderRadius: "10px",
+                border: "1px solid rgba(80,200,80,0.2)",
+                background: "rgba(80,200,80,0.04)",
+              }}
+            >
+              <div style={{ color: "#7dde7d", fontWeight: 600 }}>
+                ✓ All results saved — great work, {memberName}!
+              </div>
             </div>
-          ))}
+          )}
         </div>
       ) : (
         <div className="card text-center mb-4" style={{ padding: "32px" }}>
@@ -2543,153 +2722,6 @@ function MemberView({
             Use the arrows above to browse the week, or tap a date in the
             calendar below.
           </p>
-        </div>
-      )}
-
-      {/* Member selector — below WoD, only when there's a WoD */}
-      {wod && (
-        <div className="card mb-4" style={{ padding: "14px 18px" }}>
-          <div className="flex-between">
-            <div>
-              <div
-                style={{
-                  fontSize: "0.75rem",
-                  color: "#8a7a6a",
-                  fontWeight: 700,
-                  textTransform: "uppercase",
-                  letterSpacing: "0.06em",
-                  marginBottom: "4px",
-                }}
-              >
-                Who are you?
-              </div>
-              <div style={{ fontWeight: 600, fontSize: "0.95rem" }}>
-                {memberName || "Select your name to log results"}
-              </div>
-            </div>
-            <button
-              className="btn btn-ghost btn-sm"
-              onClick={() => setShowNameSelect((p) => !p)}
-            >
-              {showNameSelect ? "Done" : "Select"}
-            </button>
-          </div>
-          {showNameSelect && (
-            <div className="flex flex-wrap gap-2 mt-3">
-              {memberRoster.map((n) => (
-                <button
-                  key={n}
-                  className={`member-pill ${memberName === n ? "active" : ""}`}
-                  onClick={() => {
-                    setMemberName(n);
-                    setShowNameSelect(false);
-                  }}
-                >
-                  {n}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Results entry (hidden after save) */}
-      {wod && memberName && !hasSaved && (
-        <div
-          className="card mb-4"
-          style={{ border: "1px solid rgba(255,107,26,0.25)" }}
-        >
-          <div className="flex-between mb-3">
-            <h3 style={{ fontSize: "1rem", color: "#FF6B1A" }}>
-              Log Your Results — {memberName}
-            </h3>
-            {!isMemberInSession && (
-              <span className="muted small" style={{ fontSize: "0.72rem" }}>
-                (Not in today's class list)
-              </span>
-            )}
-          </div>
-          {wod.blocks.map((block, bi) => (
-            <div key={bi} style={{ marginBottom: "16px" }}>
-              <div className="flex-center gap-2 mb-2">
-                <div
-                  className="block-badge"
-                  style={{
-                    background: BLOCK_COLORS[block.name] || "#FF6B1A",
-                    color: "#fff",
-                    width: "22px",
-                    height: "22px",
-                    fontSize: "0.78rem",
-                  }}
-                >
-                  {block.name}
-                </div>
-                <span style={{ fontWeight: 600, fontSize: "0.88rem" }}>
-                  Block {block.name}
-                </span>
-              </div>
-              <div className="grid-2">
-                {(block.variables || []).map((v) => (
-                  <div key={v}>
-                    <label>{v}</label>
-                    <input
-                      value={getResult(wod.id, block.name, memberName, v)}
-                      onChange={(e) =>
-                        updateResult(
-                          wod.id,
-                          block.name,
-                          memberName,
-                          v,
-                          e.target.value,
-                        )
-                      }
-                      placeholder={`Enter ${v.toLowerCase()}`}
-                    />
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-          <button
-            className="btn btn-primary mt-2 w-full"
-            style={{ justifyContent: "center" }}
-            onClick={() =>
-              setSavedResults((p) => ({
-                ...p,
-                [`${wod.id}_${memberName}`]: true,
-              }))
-            }
-          >
-            ✓ Save My Results
-          </button>
-        </div>
-      )}
-
-      {/* Saved confirmation */}
-      {wod && memberName && hasSaved && (
-        <div
-          className="card mb-4"
-          style={{
-            border: "1px solid rgba(80,200,80,0.2)",
-            background: "rgba(80,200,80,0.04)",
-            padding: "14px 18px",
-            textAlign: "center",
-          }}
-        >
-          <div style={{ color: "#7dde7d", fontWeight: 600 }}>
-            ✓ Results saved — great work, {memberName}!
-          </div>
-          <button
-            className="btn btn-ghost btn-xs mt-2"
-            onClick={() =>
-              setSavedResults((p) => ({
-                ...p,
-                [`${wod.id}_${memberName}`]: false,
-              }))
-            }
-          >
-            Edit
-          </button>
         </div>
       )}
 
