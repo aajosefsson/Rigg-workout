@@ -40,6 +40,21 @@ const RESULT_VARS = [
   "Distance (m)",
   "Comment",
 ];
+const BLOCK_TEMPLATES = {
+  "For Time": {
+    description: "For Time:\n21-15-9\n[Movement 1]\n[Movement 2]",
+    variables: ["Time", "Comment"],
+  },
+  AMRAP: {
+    description:
+      "AMRAP 12:\n[Movement 1] x10\n[Movement 2] x10\n[Movement 3] x10",
+    variables: ["Rounds", "Reps", "Comment"],
+  },
+  EMOM: {
+    description: "EMOM 10:\nOdd minutes: [Movement]\nEven minutes: [Movement]",
+    variables: ["Reps", "Weight (kg)", "Comment"],
+  },
+};
 const EMPTY_BLOCK = () => ({
   name: "A",
   description: "",
@@ -991,6 +1006,26 @@ function WodEditor({
                   Remove
                 </button>
               </div>
+              <div className="flex gap-2 mb-2" style={{ flexWrap: "wrap" }}>
+                <span className="muted small" style={{ alignSelf: "center" }}>
+                  Templates:
+                </span>
+                {Object.keys(BLOCK_TEMPLATES).map((name) => (
+                  <button
+                    key={name}
+                    type="button"
+                    className="btn btn-ghost btn-xs"
+                    onClick={() =>
+                      updateBlock(idx, {
+                        description: BLOCK_TEMPLATES[name].description,
+                        variables: BLOCK_TEMPLATES[name].variables,
+                      })
+                    }
+                  >
+                    {name}
+                  </button>
+                ))}
+              </div>
               <textarea
                 value={block.description}
                 onChange={(e) =>
@@ -1168,8 +1203,9 @@ function WodEditor({
 function MembersAdmin({ memberRoster, setMemberRoster }) {
   const [newName, setNewName] = useState("");
   const [confirmDel, setConfirmDel] = useState(null);
-  const [editingIdx, setEditingIdx] = useState(null);
+  const [editingName, setEditingName] = useState(null);
   const [editValue, setEditValue] = useState("");
+  const [search, setSearch] = useState("");
 
   const addMember = () => {
     const n = newName.trim();
@@ -1184,32 +1220,36 @@ function MembersAdmin({ memberRoster, setMemberRoster }) {
       setConfirmDel(null);
     } else {
       setConfirmDel(name);
-      setEditingIdx(null);
+      setEditingName(null);
     }
   };
 
-  const startEdit = (i) => {
-    setEditingIdx(i);
-    setEditValue(memberRoster[i]);
+  const startEdit = (name) => {
+    setEditingName(name);
+    setEditValue(name);
     setConfirmDel(null);
   };
 
-  const saveEdit = (i) => {
+  const saveEdit = (originalName) => {
     const trimmed = editValue.trim();
     if (!trimmed) {
-      setEditingIdx(null);
+      setEditingName(null);
       return;
     }
-    // don't allow duplicate names (ignore current position)
-    if (memberRoster.some((n, idx) => n === trimmed && idx !== i)) {
-      setEditingIdx(null);
+    // don't allow duplicate names (ignore the one being edited)
+    if (memberRoster.some((n) => n === trimmed && n !== originalName)) {
+      setEditingName(null);
       return;
     }
-    const updated = [...memberRoster];
-    updated[i] = trimmed;
-    setMemberRoster(updated);
-    setEditingIdx(null);
+    setMemberRoster(
+      memberRoster.map((n) => (n === originalName ? trimmed : n)),
+    );
+    setEditingName(null);
   };
+
+  const filteredRoster = memberRoster.filter((n) =>
+    n.toLowerCase().includes(search.trim().toLowerCase()),
+  );
 
   return (
     <div>
@@ -1247,123 +1287,141 @@ function MembersAdmin({ memberRoster, setMemberRoster }) {
         </div>
       )}
 
+      {/* Search */}
+      {memberRoster.length > 0 && (
+        <div className="mb-3" style={{ maxWidth: "300px" }}>
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="🔍 Search members…"
+          />
+        </div>
+      )}
+
       {/* Roster grid */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))",
-          gap: "8px",
-        }}
-      >
-        {memberRoster.map((name, i) => (
-          <div
-            key={i}
-            className="card"
-            style={{
-              padding: "10px 14px",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: "8px",
-            }}
-          >
-            <div className="flex-center gap-2" style={{ flex: 1, minWidth: 0 }}>
+      {filteredRoster.length === 0 && memberRoster.length > 0 ? (
+        <p className="muted small">No members match "{search}".</p>
+      ) : (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))",
+            gap: "8px",
+          }}
+        >
+          {filteredRoster.map((name, i) => (
+            <div
+              key={name}
+              className="card"
+              style={{
+                padding: "10px 14px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: "8px",
+              }}
+            >
               <div
-                style={{
-                  width: "24px",
-                  height: "24px",
-                  borderRadius: "50%",
-                  background: "rgba(255,107,26,0.15)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  fontSize: "0.7rem",
-                  fontWeight: 700,
-                  color: "#FF6B1A",
-                  flexShrink: 0,
-                }}
+                className="flex-center gap-2"
+                style={{ flex: 1, minWidth: 0 }}
               >
-                {i + 1}
-              </div>
-              {editingIdx === i ? (
-                <input
-                  value={editValue}
-                  onChange={(e) => setEditValue(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") saveEdit(i);
-                    if (e.key === "Escape") setEditingIdx(null);
-                  }}
-                  autoFocus
-                  style={{ padding: "3px 8px", fontSize: "0.88rem", flex: 1 }}
-                />
-              ) : (
-                <span
+                <div
                   style={{
-                    fontWeight: 600,
-                    fontSize: "0.9rem",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
+                    width: "24px",
+                    height: "24px",
+                    borderRadius: "50%",
+                    background: "rgba(255,107,26,0.15)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontSize: "0.7rem",
+                    fontWeight: 700,
+                    color: "#FF6B1A",
+                    flexShrink: 0,
                   }}
                 >
-                  {name}
-                </span>
-              )}
-            </div>
+                  {i + 1}
+                </div>
+                {editingName === name ? (
+                  <input
+                    value={editValue}
+                    onChange={(e) => setEditValue(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") saveEdit(name);
+                      if (e.key === "Escape") setEditingName(null);
+                    }}
+                    autoFocus
+                    style={{ padding: "3px 8px", fontSize: "0.88rem", flex: 1 }}
+                  />
+                ) : (
+                  <span
+                    style={{
+                      fontWeight: 600,
+                      fontSize: "0.9rem",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {name}
+                  </span>
+                )}
+              </div>
 
-            <div className="flex gap-1" style={{ flexShrink: 0 }}>
-              {editingIdx === i ? (
-                <>
-                  <button
-                    className="btn btn-primary btn-xs"
-                    onClick={() => saveEdit(i)}
-                  >
-                    ✓
-                  </button>
-                  <button
-                    className="btn btn-ghost btn-xs"
-                    onClick={() => setEditingIdx(null)}
-                  >
-                    ✕
-                  </button>
-                </>
-              ) : confirmDel === name ? (
-                <>
-                  <button
-                    className="btn btn-danger btn-xs"
-                    onClick={() => deleteMember(name)}
-                  >
-                    Delete
-                  </button>
-                  <button
-                    className="btn btn-ghost btn-xs"
-                    onClick={() => setConfirmDel(null)}
-                  >
-                    No
-                  </button>
-                </>
-              ) : (
-                <>
-                  <button
-                    className="btn btn-ghost btn-xs"
-                    onClick={() => startEdit(i)}
-                    style={{ color: "#c8bfb0" }}
-                  >
-                    ✎
-                  </button>
-                  <button
-                    className="btn btn-ghost btn-xs"
-                    onClick={() => deleteMember(name)}
-                    style={{ color: "#ff7070" }}
-                  >
-                    ✕
-                  </button>
-                </>
-              )}
+              <div className="flex gap-1" style={{ flexShrink: 0 }}>
+                {editingName === name ? (
+                  <>
+                    <button
+                      className="btn btn-primary btn-xs"
+                      onClick={() => saveEdit(name)}
+                    >
+                      ✓
+                    </button>
+                    <button
+                      className="btn btn-ghost btn-xs"
+                      onClick={() => setEditingName(null)}
+                    >
+                      ✕
+                    </button>
+                  </>
+                ) : confirmDel === name ? (
+                  <>
+                    <button
+                      className="btn btn-danger btn-xs"
+                      onClick={() => deleteMember(name)}
+                    >
+                      Delete
+                    </button>
+                    <button
+                      className="btn btn-ghost btn-xs"
+                      onClick={() => setConfirmDel(null)}
+                    >
+                      No
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      className="btn btn-ghost btn-xs"
+                      onClick={() => startEdit(name)}
+                      style={{ color: "#c8bfb0" }}
+                    >
+                      ✎
+                    </button>
+                    <button
+                      className="btn btn-ghost btn-xs"
+                      onClick={() => deleteMember(name)}
+                      style={{ color: "#ff7070" }}
+                    >
+                      ✕
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1506,7 +1564,23 @@ function PlannerAdmin({
               key={date}
               className={`week-day-card ${date === today ? "today-card" : ""} ${wod ? "has-wod-card" : ""}`}
               onClick={() => openDay(date)}
+              style={{ position: "relative" }}
             >
+              {date === today && (
+                <span
+                  style={{
+                    position: "absolute",
+                    top: "6px",
+                    right: "6px",
+                    fontSize: "0.6rem",
+                    fontWeight: 800,
+                    letterSpacing: "0.05em",
+                    color: "#FF6B1A",
+                  }}
+                >
+                  ● TODAY
+                </span>
+              )}
               <div
                 style={{
                   fontSize: "0.72rem",
@@ -1779,6 +1853,42 @@ function PlannerAdmin({
                       >
                         ✕
                       </button>
+                    </div>
+                    <div
+                      className="flex gap-2 mb-2"
+                      style={{ flexWrap: "wrap" }}
+                    >
+                      <span
+                        className="muted small"
+                        style={{ alignSelf: "center" }}
+                      >
+                        Templates:
+                      </span>
+                      {Object.keys(BLOCK_TEMPLATES).map((name) => (
+                        <button
+                          key={name}
+                          type="button"
+                          className="btn btn-ghost btn-xs"
+                          onClick={() =>
+                            setEditWod((p) => ({
+                              ...p,
+                              blocks: p.blocks.map((b, i) =>
+                                i === idx
+                                  ? {
+                                      ...b,
+                                      description:
+                                        BLOCK_TEMPLATES[name].description,
+                                      variables:
+                                        BLOCK_TEMPLATES[name].variables,
+                                    }
+                                  : b,
+                              ),
+                            }))
+                          }
+                        >
+                          {name}
+                        </button>
+                      ))}
                     </div>
                     <textarea
                       value={block.description}
