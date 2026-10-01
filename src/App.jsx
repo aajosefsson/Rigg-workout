@@ -13,7 +13,7 @@ const load = async (key, fallback = null) => {
 const save = async (key, val) => {
   try {
     await setDoc(doc(db, "riggworkout", key), { value: val });
-  } catch (e) {}
+  } catch {}
 };
 
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -295,6 +295,7 @@ export default function App() {
   const [results, setResults] = useState({});
   const [sessionMembers, setSessionMembers] = useState({});
   const [memberRoster, setMemberRoster] = useState(DEFAULT_MEMBERS);
+  const [savedResults, setSavedResults] = useState({});
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
@@ -304,11 +305,13 @@ export default function App() {
       const sm = await load("cf_session_members");
       const aa = await load("cf_admin_auth");
       const mr = await load("cf_member_roster");
+      const sr = await load("cf_saved_results");
       if (p) setPeriods(p);
       if (r) setResults(r);
       if (sm) setSessionMembers(sm);
       if (aa) setAdminAuth(aa);
       if (mr) setMemberRoster(mr);
+      if (sr) setSavedResults(sr);
       setLoaded(true);
     })();
   }, []);
@@ -325,6 +328,9 @@ export default function App() {
   useEffect(() => {
     if (loaded) save("cf_member_roster", memberRoster);
   }, [memberRoster, loaded]);
+  useEffect(() => {
+    if (loaded) save("cf_saved_results", savedResults);
+  }, [savedResults, loaded]);
 
   const activePeriod =
     periods.find((p) => p.id === activePeriodId) || periods[0];
@@ -435,6 +441,8 @@ export default function App() {
             getResult={getResult}
             getSessionMembers={getSessionMembers}
             memberRoster={memberRoster}
+            savedResults={savedResults}
+            setSavedResults={setSavedResults}
           />
         ) : adminAuth ? (
           <AdminView
@@ -553,6 +561,7 @@ function AdminView({
 }) {
   const [tab, setTab] = useState("today");
   const [confirmDel, setConfirmDel] = useState(false);
+  const [periodExpanded, setPeriodExpanded] = useState(false);
 
   return (
     <div className="page" style={{ position: "relative", zIndex: 1 }}>
@@ -574,9 +583,23 @@ function AdminView({
           <h3 style={{ fontSize: "1rem", color: "#FF6B1A" }}>
             Training Periods
           </h3>
-          <button className="btn btn-primary btn-sm" onClick={addPeriod}>
-            + New Period
-          </button>
+          <div className="flex gap-2">
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={() => setPeriodExpanded((p) => !p)}
+            >
+              {periodExpanded ? "Hide Details" : "Edit Details"}
+            </button>
+            <button
+              className="btn btn-primary btn-sm"
+              onClick={() => {
+                addPeriod();
+                setPeriodExpanded(true);
+              }}
+            >
+              + New Period
+            </button>
+          </div>
         </div>
         <div className="period-list">
           {periods.map((p) => (
@@ -592,7 +615,15 @@ function AdminView({
             </button>
           ))}
         </div>
-        {activePeriod && (
+        {activePeriod && !periodExpanded && (
+          <p className="muted small mt-2">
+            {activePeriod.focus ? `${activePeriod.focus} · ` : ""}
+            {activePeriod.startDate && activePeriod.durationWeeks
+              ? `${formatDate(activePeriod.startDate)} – ${formatDate(addDays(activePeriod.startDate, activePeriod.durationWeeks * 7 - 1))}`
+              : "No dates set"}
+          </p>
+        )}
+        {activePeriod && periodExpanded && (
           <>
             <div className="grid-2 mt-3">
               <div>
@@ -2098,18 +2129,32 @@ function MemberView({
   getResult,
   getSessionMembers,
   memberRoster,
+  savedResults,
+  setSavedResults,
 }) {
   const today = todayStr();
   const todayMonday = getMondayOfWeek(today);
   const [weekOffset, setWeekOffset] = useState(0);
   const [selectedDate, setSelectedDate] = useState(today);
-  const [memberName, setMemberName] = useState("");
+  const [memberName, setMemberName] = useState(() => {
+    try {
+      return localStorage.getItem("rigg_member_name") || "";
+    } catch {
+      return "";
+    }
+  });
   const [showNameSelect, setShowNameSelect] = useState(false);
-  const [savedResults, setSavedResults] = useState({});
   const [calMonth, setCalMonth] = useState({
     year: new Date().getFullYear(),
     month: new Date().getMonth(),
   });
+
+  useEffect(() => {
+    try {
+      if (memberName) localStorage.setItem("rigg_member_name", memberName);
+      else localStorage.removeItem("rigg_member_name");
+    } catch {}
+  }, [memberName]);
 
   const weekStart = addDays(todayMonday, weekOffset * 7);
   const weekDates = getWeekDates(weekStart);
