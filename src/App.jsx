@@ -266,7 +266,9 @@ const css = `
   .admin-tab { padding:10px 20px; border:none; background:transparent; color:#8a7a6a; font-family:'Barlow',sans-serif; font-size:0.87rem; font-weight:600; cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px; transition:all 0.15s; }
   .admin-tab.active { color:#FF6B1A; border-bottom-color:#FF6B1A; }
   .modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.75); z-index:200; display:flex; align-items:center; justify-content:center; padding:20px; }
-  .modal-inner { background:#1a0f07; border:1px solid rgba(255,107,26,0.3); border-radius:14px; padding:28px; width:100%; max-width:620px; max-height:85vh; overflow-y:auto; }
+  .modal-inner { background:#1a0f07; border:1px solid rgba(255,107,26,0.3); border-radius:14px; width:100%; max-width:620px; max-height:85vh; display:flex; flex-direction:column; overflow:hidden; }
+  .modal-header { flex-shrink:0; padding:20px 28px 16px; border-bottom:1px solid rgba(255,255,255,0.08); }
+  .modal-body { flex:1; overflow-y:auto; padding:18px 28px 28px; }
   @media(max-width:640px){
     .grid-2,.grid-3 { grid-template-columns:1fr; }
     .nav-logo { font-size:1.2rem; }
@@ -873,6 +875,9 @@ function WodEditor({
   const [local, setLocal] = useState(wod);
   const members = getSessionMembers(wod.id);
   useEffect(() => setLocal(wod), [wod]);
+  const [expandedBlocks, setExpandedBlocks] = useState({});
+  const toggleBlockView = (name) =>
+    setExpandedBlocks((p) => ({ ...p, [name]: !p[name] }));
 
   const addBlock = () => {
     const n = ["A", "B", "C", "D"],
@@ -1059,45 +1064,109 @@ function WodEditor({
         </>
       ) : (
         <div className="mb-4">
-          {wod.blocks.map((block, idx) => (
-            <div
-              key={idx}
-              style={{
-                marginBottom: "12px",
-                paddingLeft: "12px",
-                borderLeft: `3px solid ${BLOCK_COLORS[block.name] || "#FF6B1A"}`,
-              }}
-            >
-              <div className="flex-center gap-2 mb-1">
-                <div
-                  className="block-badge"
-                  style={{
-                    background: BLOCK_COLORS[block.name] || "#FF6B1A",
-                    color: "#fff",
-                    width: "22px",
-                    height: "22px",
-                    fontSize: "0.8rem",
-                  }}
-                >
-                  {block.name}
-                </div>
-                <span style={{ fontWeight: 700, fontSize: "0.9rem" }}>
-                  Block {block.name}
-                </span>
-              </div>
-              <pre
+          {wod.blocks.map((block, idx) => {
+            const resultsOpen = !!expandedBlocks[block.name];
+            return (
+              <div
+                key={idx}
                 style={{
-                  fontFamily: "'Barlow',sans-serif",
-                  fontSize: "0.85rem",
-                  color: "#c8bfb0",
-                  whiteSpace: "pre-wrap",
-                  lineHeight: 1.5,
+                  marginBottom: "16px",
+                  paddingLeft: "12px",
+                  borderLeft: `3px solid ${BLOCK_COLORS[block.name] || "#FF6B1A"}`,
                 }}
               >
-                {block.description}
-              </pre>
-            </div>
-          ))}
+                <div className="flex-center gap-2 mb-1">
+                  <div
+                    className="block-badge"
+                    style={{
+                      background: BLOCK_COLORS[block.name] || "#FF6B1A",
+                      color: "#fff",
+                      width: "22px",
+                      height: "22px",
+                      fontSize: "0.8rem",
+                    }}
+                  >
+                    {block.name}
+                  </div>
+                  <span style={{ fontWeight: 700, fontSize: "0.9rem" }}>
+                    Block {block.name}
+                  </span>
+                </div>
+                <pre
+                  style={{
+                    fontFamily: "'Barlow',sans-serif",
+                    fontSize: "0.85rem",
+                    color: "#c8bfb0",
+                    whiteSpace: "pre-wrap",
+                    lineHeight: 1.5,
+                  }}
+                >
+                  {block.description}
+                </pre>
+                {members.length > 0 && (
+                  <div className="mt-2">
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-xs"
+                      onClick={() => toggleBlockView(block.name)}
+                    >
+                      {resultsOpen ? "▲ Hide Results" : "▼ View Results"}
+                    </button>
+                    {resultsOpen && (
+                      <div style={{ marginTop: "10px", overflowX: "auto" }}>
+                        <table className="results-table">
+                          <thead>
+                            <tr>
+                              <th>Member</th>
+                              {(block.variables || []).map((v) => (
+                                <th key={v}>{v}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {members.map((member) => (
+                              <tr key={member}>
+                                <td
+                                  style={{
+                                    fontWeight: 600,
+                                    fontSize: "0.87rem",
+                                  }}
+                                >
+                                  {member}
+                                </td>
+                                {(block.variables || []).map((v) => (
+                                  <td key={v}>
+                                    <input
+                                      value={getResult(
+                                        wod.id,
+                                        block.name,
+                                        member,
+                                        v,
+                                      )}
+                                      onChange={(e) =>
+                                        updateResult(
+                                          wod.id,
+                                          block.name,
+                                          member,
+                                          v,
+                                          e.target.value,
+                                        )
+                                      }
+                                      placeholder="—"
+                                    />
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -1133,68 +1202,6 @@ function WodEditor({
           ))}
         </div>
       </div>
-
-      {/* Results per block */}
-      {members.length > 0 &&
-        wod.blocks.map((block, bi) => (
-          <div key={bi} style={{ marginBottom: "20px" }}>
-            <div className="flex-center gap-2 mb-2">
-              <div
-                className="block-badge"
-                style={{
-                  background: BLOCK_COLORS[block.name] || "#FF6B1A",
-                  color: "#fff",
-                  width: "22px",
-                  height: "22px",
-                  fontSize: "0.8rem",
-                }}
-              >
-                {block.name}
-              </div>
-              <span style={{ fontWeight: 600, fontSize: "0.88rem" }}>
-                Block {block.name} Results
-              </span>
-            </div>
-            <div style={{ overflowX: "auto" }}>
-              <table className="results-table">
-                <thead>
-                  <tr>
-                    <th>Member</th>
-                    {(block.variables || []).map((v) => (
-                      <th key={v}>{v}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {members.map((member) => (
-                    <tr key={member}>
-                      <td style={{ fontWeight: 600, fontSize: "0.87rem" }}>
-                        {member}
-                      </td>
-                      {(block.variables || []).map((v) => (
-                        <td key={v}>
-                          <input
-                            value={getResult(wod.id, block.name, member, v)}
-                            onChange={(e) =>
-                              updateResult(
-                                wod.id,
-                                block.name,
-                                member,
-                                v,
-                                e.target.value,
-                              )
-                            }
-                            placeholder="—"
-                          />
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        ))}
     </div>
   );
 }
@@ -1744,8 +1751,11 @@ function PlannerAdmin({
           }
         >
           <div className="modal-inner">
-            {/* Modal header */}
-            <div className="flex-between mb-3">
+            {/* Modal header — a true fixed header, not part of the scrolling body, so Save/Cancel/Delete are always reachable with no gap */}
+            <div
+              className="modal-header flex-between"
+              style={{ flexWrap: "wrap", gap: "10px" }}
+            >
               <h3 style={{ color: "#FF6B1A" }}>{formatDate(selDate)}</h3>
               <div className="flex gap-2">
                 <button className="btn btn-danger btn-sm" onClick={deleteDay}>
@@ -1766,291 +1776,295 @@ function PlannerAdmin({
               </div>
             </div>
 
-            {/* Modal tabs */}
-            <div
-              style={{
-                display: "flex",
-                borderBottom: "1px solid rgba(255,255,255,0.07)",
-                marginBottom: "18px",
-              }}
-            >
-              {[
-                ["wod", "WoD"],
-                ["participants", `Participants (${sessionMems.length}/16)`],
-              ].map(([k, l]) => (
-                <button
-                  key={k}
-                  style={{
-                    padding: "7px 16px",
-                    border: "none",
-                    background: "transparent",
-                    cursor: "pointer",
-                    color: modalTab === k ? "#FF6B1A" : "#8a7a6a",
-                    fontFamily: "'Barlow',sans-serif",
-                    fontSize: "0.85rem",
-                    fontWeight: 600,
-                    borderBottom:
-                      modalTab === k
-                        ? "2px solid #FF6B1A"
-                        : "2px solid transparent",
-                    marginBottom: "-1px",
-                    transition: "all 0.15s",
-                  }}
-                  onClick={() => setModalTab(k)}
-                >
-                  {l}
-                </button>
-              ))}
-            </div>
+            <div className="modal-body">
+              {/* Modal tabs */}
+              <div
+                style={{
+                  display: "flex",
+                  borderBottom: "1px solid rgba(255,255,255,0.07)",
+                  marginBottom: "18px",
+                }}
+              >
+                {[
+                  ["wod", "WoD"],
+                  ["participants", `Participants (${sessionMems.length}/16)`],
+                ].map(([k, l]) => (
+                  <button
+                    key={k}
+                    style={{
+                      padding: "7px 16px",
+                      border: "none",
+                      background: "transparent",
+                      cursor: "pointer",
+                      color: modalTab === k ? "#FF6B1A" : "#8a7a6a",
+                      fontFamily: "'Barlow',sans-serif",
+                      fontSize: "0.85rem",
+                      fontWeight: 600,
+                      borderBottom:
+                        modalTab === k
+                          ? "2px solid #FF6B1A"
+                          : "2px solid transparent",
+                      marginBottom: "-1px",
+                      transition: "all 0.15s",
+                    }}
+                    onClick={() => setModalTab(k)}
+                  >
+                    {l}
+                  </button>
+                ))}
+              </div>
 
-            {/* WoD tab */}
-            {modalTab === "wod" && (
-              <>
-                <div className="grid-2 mb-3">
-                  <div>
-                    <label>WoD Title</label>
-                    <input
-                      value={editWod.title}
-                      onChange={(e) =>
-                        setEditWod((p) => ({ ...p, title: e.target.value }))
-                      }
-                      placeholder="Session name"
-                    />
-                  </div>
-                  <div>
-                    <label>Session #</label>
-                    <input
-                      type="number"
-                      value={editWod.sessionNumber}
-                      onChange={(e) =>
-                        setEditWod((p) => ({
-                          ...p,
-                          sessionNumber: Number(e.target.value),
-                        }))
-                      }
-                    />
-                  </div>
-                </div>
-                {editWod.blocks.map((block, idx) => (
-                  <div key={idx} className="card card-orange mb-3">
-                    <div className="flex-between mb-2">
-                      <span
-                        style={{
-                          fontWeight: 700,
-                          color: BLOCK_COLORS[block.name] || "#FF6B1A",
-                        }}
-                      >
-                        Block {block.name}
-                      </span>
-                      <button
-                        className="btn btn-danger btn-xs"
-                        onClick={() =>
+              {/* WoD tab */}
+              {modalTab === "wod" && (
+                <>
+                  <div className="grid-2 mb-3">
+                    <div>
+                      <label>WoD Title</label>
+                      <input
+                        value={editWod.title}
+                        onChange={(e) =>
+                          setEditWod((p) => ({ ...p, title: e.target.value }))
+                        }
+                        placeholder="Session name"
+                      />
+                    </div>
+                    <div>
+                      <label>Session #</label>
+                      <input
+                        type="number"
+                        value={editWod.sessionNumber}
+                        onChange={(e) =>
                           setEditWod((p) => ({
                             ...p,
-                            blocks: p.blocks.filter((_, i) => i !== idx),
+                            sessionNumber: Number(e.target.value),
                           }))
                         }
-                      >
-                        ✕
-                      </button>
+                      />
                     </div>
-                    <div
-                      className="flex gap-2 mb-2"
-                      style={{ flexWrap: "wrap" }}
-                    >
-                      <span
-                        className="muted small"
-                        style={{ alignSelf: "center" }}
-                      >
-                        Templates:
-                      </span>
-                      {Object.keys(BLOCK_TEMPLATES).map((name) => (
+                  </div>
+                  {editWod.blocks.map((block, idx) => (
+                    <div key={idx} className="card card-orange mb-3">
+                      <div className="flex-between mb-2">
+                        <span
+                          style={{
+                            fontWeight: 700,
+                            color: BLOCK_COLORS[block.name] || "#FF6B1A",
+                          }}
+                        >
+                          Block {block.name}
+                        </span>
                         <button
-                          key={name}
-                          type="button"
-                          className="btn btn-ghost btn-xs"
+                          className="btn btn-danger btn-xs"
                           onClick={() =>
                             setEditWod((p) => ({
                               ...p,
-                              blocks: p.blocks.map((b, i) =>
-                                i === idx
-                                  ? {
-                                      ...b,
-                                      description:
-                                        BLOCK_TEMPLATES[name].description,
-                                      variables:
-                                        BLOCK_TEMPLATES[name].variables,
-                                    }
-                                  : b,
-                              ),
+                              blocks: p.blocks.filter((_, i) => i !== idx),
                             }))
                           }
                         >
-                          {name}
+                          ✕
                         </button>
-                      ))}
-                    </div>
-                    <textarea
-                      value={block.description}
-                      onChange={(e) =>
-                        setEditWod((p) => ({
-                          ...p,
-                          blocks: p.blocks.map((b, i) =>
-                            i === idx
-                              ? { ...b, description: e.target.value }
-                              : b,
-                          ),
-                        }))
-                      }
-                      placeholder="Block description…"
-                      style={{ marginBottom: "8px" }}
-                    />
-                    <div className="flex flex-wrap gap-2">
-                      {RESULT_VARS.map((v) => (
-                        <label key={v} className="check-var">
-                          <input
-                            type="checkbox"
-                            checked={(block.variables || []).includes(v)}
-                            onChange={() =>
+                      </div>
+                      <div
+                        className="flex gap-2 mb-2"
+                        style={{ flexWrap: "wrap" }}
+                      >
+                        <span
+                          className="muted small"
+                          style={{ alignSelf: "center" }}
+                        >
+                          Templates:
+                        </span>
+                        {Object.keys(BLOCK_TEMPLATES).map((name) => (
+                          <button
+                            key={name}
+                            type="button"
+                            className="btn btn-ghost btn-xs"
+                            onClick={() =>
                               setEditWod((p) => ({
                                 ...p,
                                 blocks: p.blocks.map((b, i) =>
                                   i === idx
                                     ? {
                                         ...b,
-                                        variables: (b.variables || []).includes(
-                                          v,
-                                        )
-                                          ? b.variables.filter((x) => x !== v)
-                                          : [...(b.variables || []), v],
+                                        description:
+                                          BLOCK_TEMPLATES[name].description,
+                                        variables:
+                                          BLOCK_TEMPLATES[name].variables,
                                       }
                                     : b,
                                 ),
                               }))
                             }
-                          />
-                          {v}
-                        </label>
-                      ))}
+                          >
+                            {name}
+                          </button>
+                        ))}
+                      </div>
+                      <textarea
+                        value={block.description}
+                        onChange={(e) =>
+                          setEditWod((p) => ({
+                            ...p,
+                            blocks: p.blocks.map((b, i) =>
+                              i === idx
+                                ? { ...b, description: e.target.value }
+                                : b,
+                            ),
+                          }))
+                        }
+                        placeholder="Block description…"
+                        style={{ marginBottom: "8px" }}
+                      />
+                      <div className="flex flex-wrap gap-2">
+                        {RESULT_VARS.map((v) => (
+                          <label key={v} className="check-var">
+                            <input
+                              type="checkbox"
+                              checked={(block.variables || []).includes(v)}
+                              onChange={() =>
+                                setEditWod((p) => ({
+                                  ...p,
+                                  blocks: p.blocks.map((b, i) =>
+                                    i === idx
+                                      ? {
+                                          ...b,
+                                          variables: (
+                                            b.variables || []
+                                          ).includes(v)
+                                            ? b.variables.filter((x) => x !== v)
+                                            : [...(b.variables || []), v],
+                                        }
+                                      : b,
+                                  ),
+                                }))
+                              }
+                            />
+                            {v}
+                          </label>
+                        ))}
+                      </div>
                     </div>
-                  </div>
-                ))}
-                {editWod.blocks.length < 4 && (
-                  <button
-                    className="btn btn-ghost btn-sm"
-                    onClick={() => {
-                      const n = ["A", "B", "C", "D"],
-                        u = editWod.blocks.map((b) => b.name),
-                        next = n.find((x) => !u.includes(x));
-                      if (next)
-                        setEditWod((p) => ({
-                          ...p,
-                          blocks: [
-                            ...p.blocks,
-                            {
-                              name: next,
-                              description: "",
-                              variables: ["Rounds"],
-                            },
-                          ],
-                        }));
-                    }}
-                  >
-                    + Add Block
-                  </button>
-                )}
-              </>
-            )}
-
-            {/* Participants tab */}
-            {modalTab === "participants" && (
-              <div>
-                <div className="flex-between mb-3">
-                  <p style={{ fontSize: "0.85rem", color: "#c8bfb0" }}>
-                    Select up to 16 participants for this session.
-                  </p>
-                  {sessionMems.length > 0 && (
+                  ))}
+                  {editWod.blocks.length < 4 && (
                     <button
-                      className="btn btn-ghost btn-xs"
-                      onClick={() => setSessionMembersForWod(currentWodId, [])}
-                    >
-                      Clear all
-                    </button>
-                  )}
-                </div>
-
-                {memberRoster.length === 0 ? (
-                  <p className="muted small">
-                    No members in roster yet. Add members in the Members tab
-                    first.
-                  </p>
-                ) : (
-                  <div className="flex flex-wrap gap-2">
-                    {memberRoster.map((name) => {
-                      const isIn = sessionMems.includes(name);
-                      const isFull = !isIn && sessionMems.length >= 16;
-                      return (
-                        <button
-                          key={name}
-                          className={`member-pill ${isIn ? "active" : ""}`}
-                          onClick={() => toggleParticipant(name)}
-                          disabled={isFull}
-                          style={
-                            isFull
-                              ? { opacity: 0.35, cursor: "not-allowed" }
-                              : {}
-                          }
-                        >
-                          {isIn ? "✓ " : ""}
-                          {name}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-
-                {sessionMems.length > 0 && (
-                  <div
-                    style={{
-                      marginTop: "16px",
-                      paddingTop: "14px",
-                      borderTop: "1px solid rgba(255,255,255,0.07)",
-                    }}
-                  >
-                    <p
-                      style={{
-                        fontSize: "0.75rem",
-                        color: "#8a7a6a",
-                        fontWeight: 700,
-                        textTransform: "uppercase",
-                        letterSpacing: "0.06em",
-                        marginBottom: "8px",
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => {
+                        const n = ["A", "B", "C", "D"],
+                          u = editWod.blocks.map((b) => b.name),
+                          next = n.find((x) => !u.includes(x));
+                        if (next)
+                          setEditWod((p) => ({
+                            ...p,
+                            blocks: [
+                              ...p.blocks,
+                              {
+                                name: next,
+                                description: "",
+                                variables: ["Rounds"],
+                              },
+                            ],
+                          }));
                       }}
                     >
-                      Registered ({sessionMems.length})
+                      + Add Block
+                    </button>
+                  )}
+                </>
+              )}
+
+              {/* Participants tab */}
+              {modalTab === "participants" && (
+                <div>
+                  <div className="flex-between mb-3">
+                    <p style={{ fontSize: "0.85rem", color: "#c8bfb0" }}>
+                      Select up to 16 participants for this session.
                     </p>
-                    <div className="flex flex-wrap gap-2">
-                      {sessionMems.map((name) => (
-                        <span
-                          key={name}
-                          style={{
-                            padding: "4px 10px",
-                            borderRadius: "20px",
-                            background: "rgba(255,107,26,0.12)",
-                            border: "1px solid rgba(255,107,26,0.25)",
-                            color: "#FF9A4D",
-                            fontSize: "0.8rem",
-                            fontWeight: 600,
-                          }}
-                        >
-                          {name}
-                        </span>
-                      ))}
-                    </div>
+                    {sessionMems.length > 0 && (
+                      <button
+                        className="btn btn-ghost btn-xs"
+                        onClick={() =>
+                          setSessionMembersForWod(currentWodId, [])
+                        }
+                      >
+                        Clear all
+                      </button>
+                    )}
                   </div>
-                )}
-              </div>
-            )}
+
+                  {memberRoster.length === 0 ? (
+                    <p className="muted small">
+                      No members in roster yet. Add members in the Members tab
+                      first.
+                    </p>
+                  ) : (
+                    <div className="flex flex-wrap gap-2">
+                      {memberRoster.map((name) => {
+                        const isIn = sessionMems.includes(name);
+                        const isFull = !isIn && sessionMems.length >= 16;
+                        return (
+                          <button
+                            key={name}
+                            className={`member-pill ${isIn ? "active" : ""}`}
+                            onClick={() => toggleParticipant(name)}
+                            disabled={isFull}
+                            style={
+                              isFull
+                                ? { opacity: 0.35, cursor: "not-allowed" }
+                                : {}
+                            }
+                          >
+                            {isIn ? "✓ " : ""}
+                            {name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {sessionMems.length > 0 && (
+                    <div
+                      style={{
+                        marginTop: "16px",
+                        paddingTop: "14px",
+                        borderTop: "1px solid rgba(255,255,255,0.07)",
+                      }}
+                    >
+                      <p
+                        style={{
+                          fontSize: "0.75rem",
+                          color: "#8a7a6a",
+                          fontWeight: 700,
+                          textTransform: "uppercase",
+                          letterSpacing: "0.06em",
+                          marginBottom: "8px",
+                        }}
+                      >
+                        Registered ({sessionMems.length})
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {sessionMems.map((name) => (
+                          <span
+                            key={name}
+                            style={{
+                              padding: "4px 10px",
+                              borderRadius: "20px",
+                              background: "rgba(255,107,26,0.12)",
+                              border: "1px solid rgba(255,107,26,0.25)",
+                              color: "#FF9A4D",
+                              fontSize: "0.8rem",
+                              fontWeight: 600,
+                            }}
+                          >
+                            {name}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -2295,6 +2309,9 @@ function MemberView({
 
   const [openBlockIdx, setOpenBlockIdx] = useState(null);
   const blockRefs = useRef([]);
+  const [openClassResults, setOpenClassResults] = useState({});
+  const toggleClassResults = (name) =>
+    setOpenClassResults((p) => ({ ...p, [name]: !p[name] }));
 
   // When the WoD or the selected member changes, jump to the first not-yet-logged block
   useEffect(() => {
@@ -2741,67 +2758,81 @@ function MemberView({
             </h4>
             <div className="section-line" />
           </div>
-          {wod.blocks.map((block, bi) => (
-            <div key={bi} className="card mb-3">
-              <div className="flex-center gap-2 mb-2">
+          {wod.blocks.map((block, bi) => {
+            const open = !!openClassResults[block.name];
+            return (
+              <div key={bi} className="card mb-3">
                 <div
-                  className="block-badge"
-                  style={{
-                    background: BLOCK_COLORS[block.name] || "#FF6B1A",
-                    color: "#fff",
-                    width: "22px",
-                    height: "22px",
-                    fontSize: "0.78rem",
-                  }}
+                  className="flex-between"
+                  style={{ cursor: "pointer" }}
+                  onClick={() => toggleClassResults(block.name)}
                 >
-                  {block.name}
+                  <div className="flex-center gap-2">
+                    <div
+                      className="block-badge"
+                      style={{
+                        background: BLOCK_COLORS[block.name] || "#FF6B1A",
+                        color: "#fff",
+                        width: "22px",
+                        height: "22px",
+                        fontSize: "0.78rem",
+                      }}
+                    >
+                      {block.name}
+                    </div>
+                    <span style={{ fontWeight: 600, fontSize: "0.88rem" }}>
+                      Block {block.name}
+                    </span>
+                  </div>
+                  <span className="muted small">
+                    {open ? "▲ Hide" : "▼ View"}
+                  </span>
                 </div>
-                <span style={{ fontWeight: 600, fontSize: "0.88rem" }}>
-                  Block {block.name}
-                </span>
-              </div>
-              <div style={{ overflowX: "auto" }}>
-                <table className="results-table">
-                  <thead>
-                    <tr>
-                      <th>Member</th>
-                      {(block.variables || []).map((v) => (
-                        <th key={v}>{v}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {sessionMems.map((m) => (
-                      <tr key={m}>
-                        <td
-                          style={{
-                            fontWeight: 600,
-                            fontSize: "0.87rem",
-                            color: m === memberName ? "#FF6B1A" : undefined,
-                          }}
-                        >
-                          {m}
-                          {m === memberName ? " ★" : ""}
-                        </td>
-                        {(block.variables || []).map((v) => (
-                          <td
-                            key={v}
-                            style={{
-                              color: getResult(wod.id, block.name, m, v)
-                                ? undefined
-                                : "#444",
-                            }}
-                          >
-                            {getResult(wod.id, block.name, m, v) || "—"}
-                          </td>
+                {open && (
+                  <div style={{ overflowX: "auto", marginTop: "12px" }}>
+                    <table className="results-table">
+                      <thead>
+                        <tr>
+                          <th>Member</th>
+                          {(block.variables || []).map((v) => (
+                            <th key={v}>{v}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sessionMems.map((m) => (
+                          <tr key={m}>
+                            <td
+                              style={{
+                                fontWeight: 600,
+                                fontSize: "0.87rem",
+                                color: m === memberName ? "#FF6B1A" : undefined,
+                              }}
+                            >
+                              {m}
+                              {m === memberName ? " ★" : ""}
+                            </td>
+                            {(block.variables || []).map((v) => (
+                              <td
+                                key={v}
+                                style={{
+                                  color: getResult(wod.id, block.name, m, v)
+                                    ? undefined
+                                    : "#444",
+                                }}
+                              >
+                                {getResult(wod.id, block.name, m, v) || "—"}
+                              </td>
+                            ))}
+                          </tr>
                         ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
