@@ -1,6 +1,12 @@
 import { useState, useEffect, useRef } from "react";
-import { db } from "./firebase";
+import { db, auth } from "./firebase";
 import { doc, getDoc, setDoc } from "firebase/firestore";
+import {
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  signOut,
+  sendPasswordResetEmail,
+} from "firebase/auth";
 
 const load = async (key, fallback = null) => {
   try {
@@ -156,7 +162,7 @@ const css = `
 
   .nav {
     position: sticky; top:0; z-index:100;
-    display:flex; align-items:center; justify-content:space-between;
+    display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px 12px;
     padding: 14px 24px;
     background: rgba(15,10,6,0.88); backdrop-filter: blur(12px);
     border-bottom: 1px solid rgba(255,107,26,0.15);
@@ -168,7 +174,9 @@ const css = `
     font-family:'Barlow',sans-serif; font-size:0.85rem; font-weight:600;
     background: transparent; color: #8a7a6a; transition: all 0.2s; white-space:nowrap;
   }
-  .short-label { display:none; }
+  .nav-account { display:flex; align-items:center; gap:8px; }
+  .nav-user { font-size:0.78rem; color:#8a7a6a; white-space:nowrap; max-width:160px; overflow:hidden; text-overflow:ellipsis; }
+  .role-badge { display:inline-flex; padding:2px 9px; border-radius:20px; background:rgba(255,107,26,0.12); color:#FF6B1A; font-size:0.7rem; font-weight:700; letter-spacing:0.05em; text-transform:uppercase; }
   .nav-tab.active { background: rgba(255,107,26,0.15); color:#FF6B1A; }
   .nav-tab:hover:not(.active) { color:#f0ebe3; background:rgba(255,255,255,0.05); }
 
@@ -274,13 +282,12 @@ const css = `
     .grid-2,.grid-3 { grid-template-columns:1fr; }
     .admin-tab { padding:8px 12px; font-size:0.8rem; }
   }
-  @media(max-width:480px){
+  @media(max-width:560px){
     .nav { padding:10px 14px; }
-    .nav-logo { font-size:1rem; }
-    .nav-tabs { gap:2px; }
-    .nav-tab { padding:6px 9px; font-size:0.75rem; }
-    .full-label { display:none; }
-    .short-label { display:inline; }
+    .nav-logo { font-size:1.1rem; }
+    .nav-tabs { order:3; width:100%; justify-content:center; gap:4px; }
+    .nav-tab { padding:7px 14px; font-size:0.8rem; }
+    .nav-user { display:none; }
   }
 `;
 
@@ -314,7 +321,70 @@ const DEMO_PERIOD = {
 
 export default function App() {
   const [view, setView] = useState("member");
-  const [adminAuth, setAdminAuth] = useState(false);
+
+  // ── Real authentication + roles ────────────────────────────────────────────
+  const [authReady, setAuthReady] = useState(false);
+  const [authUser, setAuthUser] = useState(null);
+  const [profile, setProfile] = useState(null); // {role, orgId, name, email}; false = signed in but no profile found
+  const [org, setOrg] = useState(null);
+  const [profileError, setProfileError] = useState("");
+  const [profileLoading, setProfileLoading] = useState(false);
+
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (u) => {
+      setAuthUser(u);
+      setProfileError("");
+      if (!u) {
+        setProfile(null);
+        setOrg(null);
+        setProfileLoading(false);
+        setAuthReady(true);
+        return;
+      }
+      setProfileLoading(true);
+      try {
+        const snap = await getDoc(doc(db, "users", u.uid));
+        if (snap.exists()) {
+          const p = snap.data();
+          setProfile(p);
+          try {
+            const o = await getDoc(doc(db, "orgs", p.orgId));
+            setOrg(o.exists() ? o.data() : null);
+          } catch {
+            setOrg(null);
+          }
+        } else {
+          setProfile(false);
+          setOrg(null);
+        }
+      } catch {
+        setProfile(false);
+        setOrg(null);
+        setProfileError(
+          "Could not load your profile. Check your connection and the Firestore rules.",
+        );
+      }
+      setProfileLoading(false);
+      setAuthReady(true);
+    });
+    return unsub;
+  }, []);
+
+  const role = profile ? profile.role : null;
+  const homeFor = (r) =>
+    r === "admin"
+      ? "classes"
+      : r === "coach"
+        ? "clients"
+        : r === "member"
+          ? "myplan"
+          : "member";
+  const logout = async () => {
+    try {
+      await signOut(auth);
+    } catch {}
+    setView("member");
+  };
   const [periods, setPeriods] = useState([DEMO_PERIOD]);
   const [activePeriodId, setActivePeriodId] = useState(DEMO_PERIOD.id);
   const [results, setResults] = useState({});
@@ -328,13 +398,11 @@ export default function App() {
       const p = await load("cf_periods");
       const r = await load("cf_results");
       const sm = await load("cf_session_members");
-      const aa = await load("cf_admin_auth");
       const mr = await load("cf_member_roster");
       const sr = await load("cf_saved_results");
       if (p) setPeriods(p);
       if (r) setResults(r);
       if (sm) setSessionMembers(sm);
-      if (aa) setAdminAuth(aa);
       if (mr) setMemberRoster(mr);
       if (sr) setSavedResults(sr);
       setLoaded(true);
@@ -419,7 +487,7 @@ export default function App() {
       ),
     );
 
-  if (!loaded)
+  if (!loaded || !authReady)
     return (
       <div
         style={{
@@ -435,33 +503,73 @@ export default function App() {
       </div>
     );
 
+  // Which screen is actually shown (derived, so the nav highlight always matches)
+  const PROTECTED = ["classes", "clients", "myplan"];
+  let current = view;
+  if (
+    authUser &&
+    profileLoading &&
+    (view === "login" || PROTECTED.includes(view))
+  )
+    current = "loading";
+  else if (view === "login" && authUser)
+    current = profile ? homeFor(role) : "account";
+  if (PROTECTED.includes(current) && authUser && profile === false)
+    current = "account";
+  if (PROTECTED.includes(current) && !authUser) current = "login";
+
+  const tabs = [{ id: "member", label: "Home" }];
+  if (role === "admin")
+    tabs.push(
+      { id: "classes", label: "Classes" },
+      { id: "clients", label: "Clients" },
+    );
+  else if (role === "coach") tabs.push({ id: "clients", label: "Clients" });
+  else if (role === "member") tabs.push({ id: "myplan", label: "My Plan" });
+
+  const noAccess = <NoAccess />;
+
   return (
     <>
       <style>{css}</style>
       <div className="app-root">
         <GrainBg />
         <nav className="nav">
-          <div className="nav-logo">
-            ⚡ <span className="full-label">RIGG WORKOUT</span>
-            <span className="short-label">RIGG</span>
-          </div>
+          <div className="nav-logo">⚡ RIGG WORKOUT</div>
           <div className="nav-tabs">
-            <button
-              className={`nav-tab ${view === "member" ? "active" : ""}`}
-              onClick={() => setView("member")}
-            >
-              Home
-            </button>
-            <button
-              className={`nav-tab ${view === "admin" ? "active" : ""}`}
-              onClick={() => setView("admin")}
-            >
-              <span className="full-label">Coach Admin</span>
-              <span className="short-label">Admin</span>
-            </button>
+            {tabs.map((t) => (
+              <button
+                key={t.id}
+                className={`nav-tab ${current === t.id ? "active" : ""}`}
+                onClick={() => setView(t.id)}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+          <div className="nav-account">
+            {authUser ? (
+              <>
+                <span className="nav-user">
+                  {profile?.name || authUser.email}
+                </span>
+                {role && <span className="role-badge">{role}</span>}
+                <button className="nav-tab" onClick={logout}>
+                  Log out
+                </button>
+              </>
+            ) : (
+              <button
+                className={`nav-tab ${current === "login" ? "active" : ""}`}
+                onClick={() => setView("login")}
+              >
+                Log in
+              </button>
+            )}
           </div>
         </nav>
-        {view === "member" ? (
+
+        {current === "member" && (
           <MemberView
             allWorkouts={allWorkouts}
             periods={periods}
@@ -473,78 +581,156 @@ export default function App() {
             savedResults={savedResults}
             setSavedResults={setSavedResults}
           />
-        ) : adminAuth ? (
-          <AdminView
-            periods={periods}
-            activePeriod={activePeriod}
-            activePeriodId={activePeriodId}
-            setActivePeriodId={setActivePeriodId}
-            updatePeriod={updatePeriod}
-            addPeriod={addPeriod}
-            deletePeriod={deletePeriod}
-            addWorkout={addWorkout}
-            updateWorkout={updateWorkout}
-            deleteWorkout={deleteWorkout}
-            results={results}
-            updateResult={updateResult}
-            getResult={getResult}
-            sessionMembers={sessionMembers}
-            setSessionMembersForWod={setSessionMembersForWod}
-            getSessionMembers={getSessionMembers}
-            memberRoster={memberRoster}
-            setMemberRoster={setMemberRoster}
-            onLogout={() => {
-              setAdminAuth(false);
-              save("cf_admin_auth", false);
-            }}
-          />
-        ) : (
-          <LoginView
-            onLogin={() => {
-              setAdminAuth(true);
-              save("cf_admin_auth", true);
-            }}
+        )}
+        {current === "loading" && (
+          <div
+            className="page text-center muted"
+            style={{ position: "relative", zIndex: 1 }}
+          >
+            Loading your account…
+          </div>
+        )}
+        {current === "login" && <LoginView />}
+        {current === "account" && (
+          <AccountNotice
+            email={authUser?.email}
+            error={profileError}
+            onLogout={logout}
           />
         )}
+        {current === "classes" &&
+          (role === "admin" ? (
+            <AdminView
+              periods={periods}
+              activePeriod={activePeriod}
+              activePeriodId={activePeriodId}
+              setActivePeriodId={setActivePeriodId}
+              updatePeriod={updatePeriod}
+              addPeriod={addPeriod}
+              deletePeriod={deletePeriod}
+              addWorkout={addWorkout}
+              updateWorkout={updateWorkout}
+              deleteWorkout={deleteWorkout}
+              results={results}
+              updateResult={updateResult}
+              getResult={getResult}
+              sessionMembers={sessionMembers}
+              setSessionMembersForWod={setSessionMembersForWod}
+              getSessionMembers={getSessionMembers}
+              memberRoster={memberRoster}
+              setMemberRoster={setMemberRoster}
+            />
+          ) : (
+            noAccess
+          ))}
+        {current === "clients" &&
+          (role === "admin" || role === "coach" ? (
+            <ComingSoon
+              title="CLIENTS"
+              subtitle="Private client plans and schedules"
+              step="Step 3"
+              profile={profile}
+              org={org}
+            />
+          ) : (
+            noAccess
+          ))}
+        {current === "myplan" &&
+          (role === "member" ? (
+            <ComingSoon
+              title="MY PLAN"
+              subtitle="Your personal sessions and upcoming schedule"
+              step="Step 5"
+              profile={profile}
+              org={org}
+            />
+          ) : (
+            noAccess
+          ))}
       </div>
     </>
   );
 }
 
 // ─── LOGIN ─────────────────────────────────────────────────────────────────────
-function LoginView({ onLogin }) {
-  const [user, setUser] = useState("");
+function LoginView() {
+  const [email, setEmail] = useState("");
   const [pass, setPass] = useState("");
   const [err, setErr] = useState("");
-  const attempt = () => {
-    if (user === "Coach" && pass === "Rigg123") onLogin();
-    else setErr("Invalid credentials.");
+  const [info, setInfo] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const friendly = (code) =>
+    ({
+      "auth/invalid-credential": "Wrong email or password.",
+      "auth/invalid-email": "That doesn't look like a valid email address.",
+      "auth/user-disabled":
+        "This account has been disabled. Contact your admin.",
+      "auth/too-many-requests":
+        "Too many attempts. Wait a few minutes and try again.",
+      "auth/network-request-failed": "Network problem. Check your connection.",
+    })[code] || "Could not sign in. Please try again.";
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setErr("");
+    setInfo("");
+    if (!email.trim() || !pass) {
+      setErr("Enter your email and password.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await signInWithEmailAndPassword(auth, email.trim(), pass);
+    } catch (ex) {
+      setErr(friendly(ex.code));
+    }
+    setBusy(false);
   };
+
+  const reset = async () => {
+    setErr("");
+    setInfo("");
+    if (!email.trim()) {
+      setErr("Enter your email above first, then click 'Forgot password?'.");
+      return;
+    }
+    try {
+      await sendPasswordResetEmail(auth, email.trim());
+    } catch {}
+    setInfo(
+      "If an account exists for that email, a password reset link has been sent.",
+    );
+  };
+
   return (
     <div className="login-wrap" style={{ position: "relative", zIndex: 1 }}>
-      <div className="login-card">
+      <form className="login-card" onSubmit={submit}>
         <div className="text-center mb-4">
           <div style={{ fontSize: "2.5rem", marginBottom: "8px" }}>⚡</div>
-          <h2 style={{ fontSize: "1.8rem", color: "#FF6B1A" }}>COACH ADMIN</h2>
-          <p className="muted small mt-1">Restricted access</p>
+          <h2 style={{ fontSize: "1.8rem", color: "#FF6B1A" }}>SIGN IN</h2>
+          <p className="muted small mt-1">Admins, coaches and members</p>
         </div>
         <div className="mt-4">
-          <label>Username</label>
+          <label htmlFor="login-email">Email</label>
           <input
-            value={user}
-            onChange={(e) => setUser(e.target.value)}
-            placeholder="Coach"
-            onKeyDown={(e) => e.key === "Enter" && attempt()}
+            id="login-email"
+            type="email"
+            autoComplete="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="you@example.com"
           />
         </div>
         <div className="mt-3">
-          <label>Password</label>
+          <label htmlFor="login-pass">Password</label>
           <input
+            id="login-pass"
             type="password"
+            autoComplete="current-password"
             value={pass}
             onChange={(e) => setPass(e.target.value)}
             placeholder="••••••••"
-            onKeyDown={(e) => e.key === "Enter" && attempt()}
           />
         </div>
         {err && (
@@ -554,13 +740,110 @@ function LoginView({ onLogin }) {
             {err}
           </div>
         )}
+        {info && (
+          <div
+            style={{ color: "#7dde7d", fontSize: "0.82rem", marginTop: "10px" }}
+          >
+            {info}
+          </div>
+        )}
         <button
+          type="submit"
+          disabled={busy}
           className="btn btn-primary w-full mt-4"
-          style={{ justifyContent: "center", padding: "12px" }}
-          onClick={attempt}
+          style={{
+            justifyContent: "center",
+            padding: "12px",
+            opacity: busy ? 0.6 : 1,
+          }}
         >
-          Sign In →
+          {busy ? "Signing in…" : "Sign In →"}
         </button>
+        <div className="text-center mt-3">
+          <button
+            type="button"
+            className="btn btn-ghost btn-xs"
+            onClick={reset}
+          >
+            Forgot password?
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function AccountNotice({ email, error, onLogout }) {
+  return (
+    <div
+      className="page"
+      style={{ position: "relative", zIndex: 1, maxWidth: "560px" }}
+    >
+      <div className="card text-center" style={{ padding: "32px" }}>
+        <h2
+          style={{ fontSize: "1.5rem", color: "#FF6B1A", marginBottom: "8px" }}
+        >
+          ACCOUNT NOT SET UP
+        </h2>
+        <p className="muted small">
+          You're signed in{email ? ` as ${email}` : ""}, but this account isn't
+          linked to an organization yet. Ask your admin for an invite.
+        </p>
+        {error && (
+          <p
+            style={{ color: "#ff7070", fontSize: "0.82rem", marginTop: "10px" }}
+          >
+            {error}
+          </p>
+        )}
+        <button className="btn btn-ghost mt-4" onClick={onLogout}>
+          Log out
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function NoAccess() {
+  return (
+    <div
+      className="page"
+      style={{ position: "relative", zIndex: 1, maxWidth: "560px" }}
+    >
+      <div className="card text-center" style={{ padding: "32px" }}>
+        <h2
+          style={{ fontSize: "1.5rem", color: "#FF6B1A", marginBottom: "8px" }}
+        >
+          NO ACCESS
+        </h2>
+        <p className="muted small">
+          Your role doesn't have access to this area.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function ComingSoon({ title, subtitle, step, profile, org }) {
+  return (
+    <div
+      className="page"
+      style={{ position: "relative", zIndex: 1, maxWidth: "700px" }}
+    >
+      <div className="mb-4">
+        <h1 style={{ fontSize: "2rem", color: "#FF6B1A" }}>{title}</h1>
+        <p className="muted small">{subtitle}</p>
+      </div>
+      <div className="card" style={{ padding: "28px", textAlign: "center" }}>
+        <span className="session-tag">{step}</span>
+        <p className="muted mt-3">
+          This area is being built. The login and role system is working.
+        </p>
+        <p className="small mt-3" style={{ color: "#c8bfb0" }}>
+          Signed in as <strong>{profile?.name || profile?.email}</strong> · role{" "}
+          <strong>{profile?.role}</strong> · organization{" "}
+          <strong>{org?.name || profile?.orgId}</strong>
+        </p>
       </div>
     </div>
   );
@@ -586,7 +869,6 @@ function AdminView({
   getSessionMembers,
   memberRoster,
   setMemberRoster,
-  onLogout,
 }) {
   const [tab, setTab] = useState("today");
   const [confirmDel, setConfirmDel] = useState(false);
@@ -596,14 +878,11 @@ function AdminView({
     <div className="page" style={{ position: "relative", zIndex: 1 }}>
       <div className="flex-between mb-4">
         <div>
-          <h1 style={{ fontSize: "2rem", color: "#FF6B1A" }}>
-            COACH DASHBOARD
-          </h1>
-          <p className="muted small">Training management system</p>
+          <h1 style={{ fontSize: "2rem", color: "#FF6B1A" }}>CLASSES</h1>
+          <p className="muted small">
+            Group sessions, planning and participants
+          </p>
         </div>
-        <button className="btn btn-ghost btn-sm" onClick={onLogout}>
-          Log Out
-        </button>
       </div>
 
       {/* Period bar */}
