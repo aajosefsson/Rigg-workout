@@ -1,9 +1,23 @@
 import { useState, useEffect, useRef } from "react";
 import { db, auth } from "./firebase";
-import { doc, getDoc, setDoc } from "firebase/firestore";
+import {
+  doc,
+  getDoc,
+  setDoc,
+  deleteDoc,
+  collection,
+  query,
+  where,
+  getDocs,
+  writeBatch,
+  serverTimestamp,
+  Timestamp,
+} from "firebase/firestore";
 import {
   onAuthStateChanged,
   signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  deleteUser,
   signOut,
   sendPasswordResetEmail,
 } from "firebase/auth";
@@ -319,16 +333,63 @@ const DEMO_PERIOD = {
   ],
 };
 
+// ─── Invite helpers ────────────────────────────────────────────────────────────
+const roleLabel = (r) => (r === "member" ? "client" : r);
+const readInviteParam = () => {
+  try {
+    return new URLSearchParams(window.location.search).get("invite") || "";
+  } catch {
+    return "";
+  }
+};
+const normCode = (c) => (c || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+const makeCode = () => {
+  const chars = "abcdefghijkmnpqrstuvwxyz23456789"; // 32 symbols, no look-alikes (l, o, 0, 1)
+  const bytes = new Uint8Array(20);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => chars[b % chars.length]).join("");
+};
+const prettyCode = (c) => (c.match(/.{1,5}/g) || []).join("-");
+
 export default function App() {
-  const [view, setView] = useState("member");
+  const [view, setView] = useState(() =>
+    readInviteParam() ? "register" : "member",
+  );
+  const [inviteCode, setInviteCode] = useState(() => readInviteParam());
+  const registeringRef = useRef(false);
 
   // ── Real authentication + roles ────────────────────────────────────────────
   const [authReady, setAuthReady] = useState(false);
   const [authUser, setAuthUser] = useState(null);
-  const [profile, setProfile] = useState(null); // {role, orgId, name, email}; false = signed in but no profile found
+  const [profile, setProfile] = useState(null); // {role, orgId, name, email, ...}; false = signed in but no profile found
   const [org, setOrg] = useState(null);
   const [profileError, setProfileError] = useState("");
   const [profileLoading, setProfileLoading] = useState(false);
+
+  const loadProfile = async (u) => {
+    try {
+      const snap = await getDoc(doc(db, "users", u.uid));
+      if (snap.exists()) {
+        const p = snap.data();
+        setProfile(p);
+        try {
+          const o = await getDoc(doc(db, "orgs", p.orgId));
+          setOrg(o.exists() ? o.data() : null);
+        } catch {
+          setOrg(null);
+        }
+      } else {
+        setProfile(false);
+        setOrg(null);
+      }
+    } catch {
+      setProfile(false);
+      setOrg(null);
+      setProfileError(
+        "Could not load your profile. Check your connection and the Firestore rules.",
+      );
+    }
+  };
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -341,34 +402,30 @@ export default function App() {
         setAuthReady(true);
         return;
       }
+      if (registeringRef.current) {
+        setAuthReady(true);
+        return;
+      } // the register screen loads the profile itself when done
       setProfileLoading(true);
-      try {
-        const snap = await getDoc(doc(db, "users", u.uid));
-        if (snap.exists()) {
-          const p = snap.data();
-          setProfile(p);
-          try {
-            const o = await getDoc(doc(db, "orgs", p.orgId));
-            setOrg(o.exists() ? o.data() : null);
-          } catch {
-            setOrg(null);
-          }
-        } else {
-          setProfile(false);
-          setOrg(null);
-        }
-      } catch {
-        setProfile(false);
-        setOrg(null);
-        setProfileError(
-          "Could not load your profile. Check your connection and the Firestore rules.",
-        );
-      }
+      await loadProfile(u);
       setProfileLoading(false);
       setAuthReady(true);
     });
     return unsub;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const finishRegistration = async () => {
+    registeringRef.current = false;
+    setProfileLoading(true);
+    await loadProfile(auth.currentUser);
+    setProfileLoading(false);
+    try {
+      window.history.replaceState({}, "", window.location.pathname);
+    } catch {}
+    setInviteCode("");
+    setView("login"); // derived routing sends the new user to their role's home
+  };
 
   const role = profile ? profile.role : null;
   const homeFor = (r) =>
@@ -553,7 +610,7 @@ export default function App() {
                 <span className="nav-user">
                   {profile?.name || authUser.email}
                 </span>
-                {role && <span className="role-badge">{role}</span>}
+                {role && <span className="role-badge">{roleLabel(role)}</span>}
                 <button className="nav-tab" onClick={logout}>
                   Log out
                 </button>
@@ -590,7 +647,28 @@ export default function App() {
             Loading your account…
           </div>
         )}
-        {current === "login" && <LoginView />}
+        {current === "login" && (
+          <LoginView onRegister={() => setView("register")} />
+        )}
+        {current === "register" && (
+          <RegisterView
+            initialCode={inviteCode}
+            authUser={authUser}
+            onLogout={async () => {
+              try {
+                await signOut(auth);
+              } catch {}
+            }}
+            onBegin={() => {
+              registeringRef.current = true;
+            }}
+            onAbort={() => {
+              registeringRef.current = false;
+            }}
+            onDone={finishRegistration}
+            onBackToLogin={() => setView("login")}
+          />
+        )}
         {current === "account" && (
           <AccountNotice
             email={authUser?.email}
@@ -625,13 +703,7 @@ export default function App() {
           ))}
         {current === "clients" &&
           (role === "admin" || role === "coach" ? (
-            <ComingSoon
-              title="CLIENTS"
-              subtitle="Private client plans and schedules"
-              step="Step 3"
-              profile={profile}
-              org={org}
-            />
+            <ClientsView profile={profile} authUser={authUser} org={org} />
           ) : (
             noAccess
           ))}
@@ -653,7 +725,7 @@ export default function App() {
 }
 
 // ─── LOGIN ─────────────────────────────────────────────────────────────────────
-function LoginView() {
+function LoginView({ onRegister }) {
   const [email, setEmail] = useState("");
   const [pass, setPass] = useState("");
   const [err, setErr] = useState("");
@@ -759,13 +831,23 @@ function LoginView() {
         >
           {busy ? "Signing in…" : "Sign In →"}
         </button>
-        <div className="text-center mt-3">
+        <div
+          className="text-center mt-3 flex gap-2"
+          style={{ justifyContent: "center", flexWrap: "wrap" }}
+        >
           <button
             type="button"
             className="btn btn-ghost btn-xs"
             onClick={reset}
           >
             Forgot password?
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost btn-xs"
+            onClick={onRegister}
+          >
+            Have an invite? Register
           </button>
         </div>
       </form>
@@ -841,10 +923,701 @@ function ComingSoon({ title, subtitle, step, profile, org }) {
         </p>
         <p className="small mt-3" style={{ color: "#c8bfb0" }}>
           Signed in as <strong>{profile?.name || profile?.email}</strong> · role{" "}
-          <strong>{profile?.role}</strong> · organization{" "}
+          <strong>{roleLabel(profile?.role)}</strong> · organization{" "}
           <strong>{org?.name || profile?.orgId}</strong>
         </p>
       </div>
+    </div>
+  );
+}
+
+// ─── REGISTER (via invite) ─────────────────────────────────────────────────────
+function RegisterView({
+  initialCode,
+  authUser,
+  onLogout,
+  onBegin,
+  onAbort,
+  onDone,
+  onBackToLogin,
+}) {
+  const [code, setCode] = useState(initialCode || "");
+  const [invite, setInvite] = useState(null);
+  const [checking, setChecking] = useState(false);
+  const [err, setErr] = useState("");
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [pass, setPass] = useState("");
+  const [pass2, setPass2] = useState("");
+  const [working, setWorking] = useState(false);
+
+  const checkCode = async (raw) => {
+    const c = normCode(raw);
+    setErr("");
+    setInvite(null);
+    if (c.length < 10) {
+      setErr("Enter the full invite code.");
+      return;
+    }
+    setChecking(true);
+    try {
+      const snap = await getDoc(doc(db, "invites", c));
+      if (!snap.exists()) setErr("That invite code wasn't found.");
+      else {
+        const d = snap.data();
+        const exp = d.expiresAt?.toMillis ? d.expiresAt.toMillis() : 0;
+        if (d.used) setErr("This invite has already been used.");
+        else if (exp < Date.now())
+          setErr("This invite has expired. Ask for a new one.");
+        else {
+          setInvite({ code: c, ...d });
+          setName(d.inviteeName || "");
+        }
+      }
+    } catch {
+      setErr("Could not check the code. Check your connection and try again.");
+    }
+    setChecking(false);
+  };
+
+  useEffect(() => {
+    if (initialCode)
+      checkCode(
+        initialCode,
+      ); /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, []);
+
+  const friendly = (code) =>
+    ({
+      "auth/email-already-in-use":
+        "An account with this email already exists. Try signing in instead.",
+      "auth/invalid-email": "That doesn't look like a valid email address.",
+      "auth/weak-password":
+        "Choose a stronger password (at least 8 characters).",
+      "auth/network-request-failed": "Network problem. Check your connection.",
+      "permission-denied":
+        "This invite can't be used. It may have just been used or have expired.",
+    })[code] || "Could not create the account. Please try again.";
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setErr("");
+    if (!name.trim()) {
+      setErr("Enter your name.");
+      return;
+    }
+    if (!email.trim()) {
+      setErr("Enter your email.");
+      return;
+    }
+    if (pass.length < 8) {
+      setErr("Password must be at least 8 characters.");
+      return;
+    }
+    if (pass !== pass2) {
+      setErr("The passwords don't match.");
+      return;
+    }
+    setWorking(true);
+    onBegin();
+    let cred = null;
+    try {
+      cred = await createUserWithEmailAndPassword(auth, email.trim(), pass);
+      const uid = cred.user.uid;
+      const batch = writeBatch(db);
+      const profileData = {
+        role: invite.role,
+        orgId: invite.orgId,
+        name: name.trim(),
+        email: (cred.user.email || "").toLowerCase(),
+        active: true,
+        createdBy: invite.createdBy,
+        inviteCode: invite.code,
+        createdAt: serverTimestamp(),
+      };
+      if (invite.coachId) profileData.coachId = invite.coachId;
+      batch.set(doc(db, "users", uid), profileData);
+      batch.update(doc(db, "invites", invite.code), {
+        used: true,
+        usedBy: uid,
+        usedAt: serverTimestamp(),
+      });
+      await batch.commit();
+      await onDone();
+    } catch (ex) {
+      if (cred?.user) {
+        try {
+          await deleteUser(cred.user);
+        } catch {}
+      } // never leave a half-created account behind
+      onAbort();
+      setWorking(false);
+      setErr(friendly(ex.code));
+    }
+  };
+
+  const shell = (children) => (
+    <div className="login-wrap" style={{ position: "relative", zIndex: 1 }}>
+      {children}
+    </div>
+  );
+
+  if (authUser && !working) {
+    return shell(
+      <div className="login-card text-center">
+        <h2 style={{ fontSize: "1.6rem", color: "#FF6B1A" }}>
+          ALREADY SIGNED IN
+        </h2>
+        <p className="muted small mt-2">
+          You're signed in as {authUser.email}. Log out first to register with
+          an invite.
+        </p>
+        <button className="btn btn-ghost mt-4" onClick={onLogout}>
+          Log out
+        </button>
+      </div>,
+    );
+  }
+
+  if (working) {
+    return shell(
+      <div className="login-card text-center">
+        <h2 style={{ fontSize: "1.6rem", color: "#FF6B1A" }}>
+          CREATING YOUR ACCOUNT…
+        </h2>
+        <p className="muted small mt-2">This only takes a moment.</p>
+      </div>,
+    );
+  }
+
+  if (!invite) {
+    return shell(
+      <div className="login-card">
+        <div className="text-center mb-4">
+          <div style={{ fontSize: "2.5rem", marginBottom: "8px" }}>⚡</div>
+          <h2 style={{ fontSize: "1.8rem", color: "#FF6B1A" }}>
+            JOIN WITH AN INVITE
+          </h2>
+          <p className="muted small mt-1">Enter the code you were given</p>
+        </div>
+        <label htmlFor="invite-code">Invite code</label>
+        <input
+          id="invite-code"
+          value={code}
+          onChange={(e) => setCode(e.target.value)}
+          placeholder="xxxxx-xxxxx-xxxxx-xxxxx"
+          autoComplete="off"
+          onKeyDown={(e) => e.key === "Enter" && checkCode(code)}
+          style={{ fontFamily: "monospace" }}
+        />
+        {err && (
+          <div
+            style={{ color: "#ff7070", fontSize: "0.82rem", marginTop: "10px" }}
+          >
+            {err}
+          </div>
+        )}
+        <button
+          className="btn btn-primary w-full mt-4"
+          disabled={checking}
+          style={{
+            justifyContent: "center",
+            padding: "12px",
+            opacity: checking ? 0.6 : 1,
+          }}
+          onClick={() => checkCode(code)}
+        >
+          {checking ? "Checking…" : "Continue →"}
+        </button>
+        <div className="text-center mt-3">
+          <button className="btn btn-ghost btn-xs" onClick={onBackToLogin}>
+            Back to sign in
+          </button>
+        </div>
+      </div>,
+    );
+  }
+
+  return shell(
+    <form className="login-card" onSubmit={submit}>
+      <div className="text-center mb-4">
+        <div style={{ fontSize: "2.5rem", marginBottom: "8px" }}>⚡</div>
+        <h2 style={{ fontSize: "1.8rem", color: "#FF6B1A" }}>
+          JOIN {String(invite.orgName || "").toUpperCase()}
+        </h2>
+        <p className="muted small mt-1">
+          {invite.createdByName || "Your coach"} invited you as a{" "}
+          <strong style={{ color: "#f0ebe3" }}>{roleLabel(invite.role)}</strong>
+        </p>
+      </div>
+      <div className="mt-3">
+        <label htmlFor="reg-name">Your name</label>
+        <input
+          id="reg-name"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          autoComplete="name"
+          placeholder="Full name"
+        />
+      </div>
+      <div className="mt-3">
+        <label htmlFor="reg-email">Email</label>
+        <input
+          id="reg-email"
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          autoComplete="email"
+          placeholder="you@example.com"
+        />
+      </div>
+      <div className="mt-3">
+        <label htmlFor="reg-pass">Choose a password</label>
+        <input
+          id="reg-pass"
+          type="password"
+          value={pass}
+          onChange={(e) => setPass(e.target.value)}
+          autoComplete="new-password"
+          placeholder="At least 8 characters"
+        />
+      </div>
+      <div className="mt-3">
+        <label htmlFor="reg-pass2">Repeat password</label>
+        <input
+          id="reg-pass2"
+          type="password"
+          value={pass2}
+          onChange={(e) => setPass2(e.target.value)}
+          autoComplete="new-password"
+          placeholder="••••••••"
+        />
+      </div>
+      {err && (
+        <div
+          style={{ color: "#ff7070", fontSize: "0.82rem", marginTop: "10px" }}
+        >
+          {err}
+        </div>
+      )}
+      <button
+        type="submit"
+        className="btn btn-primary w-full mt-4"
+        style={{ justifyContent: "center", padding: "12px" }}
+      >
+        Create account →
+      </button>
+    </form>,
+  );
+}
+
+// ─── CLIENTS (invites + people; private plans arrive in step 3) ────────────────
+function ClientsView({ profile, authUser, org }) {
+  const myRole = profile.role,
+    orgId = profile.orgId,
+    uid = authUser.uid;
+  const [people, setPeople] = useState([]);
+  const [invites, setInvites] = useState([]);
+  const [loadErr, setLoadErr] = useState("");
+  const [tick, setTick] = useState(0);
+  const [role, setRole] = useState("member");
+  const [inviteeName, setInviteeName] = useState("");
+  const [coachId, setCoachId] = useState(uid);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [created, setCreated] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const uq =
+          myRole === "admin"
+            ? query(collection(db, "users"), where("orgId", "==", orgId))
+            : query(
+                collection(db, "users"),
+                where("orgId", "==", orgId),
+                where("coachId", "==", uid),
+              );
+        const iq =
+          myRole === "admin"
+            ? query(collection(db, "invites"), where("orgId", "==", orgId))
+            : query(
+                collection(db, "invites"),
+                where("orgId", "==", orgId),
+                where("createdBy", "==", uid),
+              );
+        const [us, is] = await Promise.all([getDocs(uq), getDocs(iq)]);
+        if (!cancelled) {
+          setPeople(us.docs.map((d) => ({ id: d.id, ...d.data() })));
+          setInvites(is.docs.map((d) => ({ id: d.id, ...d.data() })));
+          setLoadErr("");
+        }
+      } catch {
+        if (!cancelled)
+          setLoadErr(
+            "Could not load people and invites. Check your connection and the Firestore rules.",
+          );
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [myRole, orgId, uid, tick]);
+
+  const nameOf = (id) =>
+    id === uid
+      ? profile.name || "me"
+      : people.find((p) => p.id === id)?.name || "—";
+  const coaches = people.filter((p) => p.role === "coach");
+  const clients = people.filter((p) => p.role === "member");
+  const pending = invites.filter(
+    (i) =>
+      !i.used && i.expiresAt?.toMillis && i.expiresAt.toMillis() > Date.now(),
+  );
+  const fmt = (ts) =>
+    ts?.toMillis ? new Date(ts.toMillis()).toLocaleDateString("en-GB") : "";
+  const linkFor = (code) => `${window.location.origin}/?invite=${code}`;
+
+  const copy = async (text) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setMsg("Copied to clipboard.");
+    } catch {
+      window.prompt("Copy this link:", text);
+    }
+  };
+
+  const createInvite = async () => {
+    setMsg("");
+    setBusy(true);
+    try {
+      const code = makeCode();
+      const inviteRole = myRole === "coach" ? "member" : role;
+      const data = {
+        orgId,
+        orgName: org?.name || orgId,
+        role: inviteRole,
+        createdBy: uid,
+        createdByName: profile.name || authUser.email,
+        createdAt: serverTimestamp(),
+        expiresAt: Timestamp.fromMillis(Date.now() + 7 * 86400000),
+        used: false,
+      };
+      if (inviteRole === "member")
+        data.coachId = myRole === "coach" ? uid : coachId;
+      if (inviteeName.trim()) data.inviteeName = inviteeName.trim();
+      await setDoc(doc(db, "invites", code), data);
+      setCreated({
+        code,
+        role: inviteRole,
+        inviteeName: data.inviteeName || "",
+      });
+      setInviteeName("");
+      setTick((t) => t + 1);
+    } catch {
+      setMsg(
+        "Could not create the invite. Check your permissions and try again.",
+      );
+    }
+    setBusy(false);
+  };
+
+  const revoke = async (code) => {
+    try {
+      await deleteDoc(doc(db, "invites", code));
+      setMsg("Invite revoked.");
+      if (created?.code === code) setCreated(null);
+      setTick((t) => t + 1);
+    } catch {
+      setMsg("Could not revoke the invite.");
+    }
+  };
+
+  return (
+    <div
+      className="page"
+      style={{ position: "relative", zIndex: 1, maxWidth: "820px" }}
+    >
+      <div className="mb-4">
+        <h1 style={{ fontSize: "2rem", color: "#FF6B1A" }}>CLIENTS</h1>
+        <p className="muted small">
+          {myRole === "admin"
+            ? "Everyone in your organization"
+            : "Your clients"}{" "}
+          · private plans arrive in the next step
+        </p>
+      </div>
+
+      {loadErr && (
+        <div
+          className="card mb-4"
+          style={{ color: "#ff7070", fontSize: "0.85rem" }}
+        >
+          {loadErr}
+        </div>
+      )}
+
+      {/* Create invite */}
+      <div className="card mb-4">
+        <h3
+          style={{ fontSize: "1rem", color: "#FF6B1A", marginBottom: "12px" }}
+        >
+          Invite someone
+        </h3>
+        <div className="grid-2">
+          <div>
+            <label htmlFor="inv-role">Role</label>
+            {myRole === "admin" ? (
+              <select
+                id="inv-role"
+                value={role}
+                onChange={(e) => setRole(e.target.value)}
+              >
+                <option value="member">Client</option>
+                <option value="coach">Coach</option>
+              </select>
+            ) : (
+              <select id="inv-role" value="member" disabled>
+                <option value="member">Client</option>
+              </select>
+            )}
+          </div>
+          <div>
+            <label htmlFor="inv-name">Name (optional)</label>
+            <input
+              id="inv-name"
+              value={inviteeName}
+              onChange={(e) => setInviteeName(e.target.value)}
+              placeholder="Who is this for?"
+            />
+          </div>
+          {myRole === "admin" && role === "member" && (
+            <div>
+              <label htmlFor="inv-coach">Responsible coach</label>
+              <select
+                id="inv-coach"
+                value={coachId}
+                onChange={(e) => setCoachId(e.target.value)}
+              >
+                <option value={uid}>Me ({profile.name || "admin"})</option>
+                {coaches.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+        </div>
+        <div
+          className="flex gap-3 mt-3"
+          style={{ alignItems: "center", flexWrap: "wrap" }}
+        >
+          <button
+            className="btn btn-primary"
+            disabled={busy}
+            onClick={createInvite}
+            style={{ opacity: busy ? 0.6 : 1 }}
+          >
+            {busy ? "Creating…" : "Create invite"}
+          </button>
+          <span className="muted small">
+            Invites are valid for 7 days and can be used once.
+          </span>
+        </div>
+
+        {created && (
+          <div
+            className="card card-orange mt-4"
+            style={{ padding: "14px 16px" }}
+          >
+            <div
+              className="small"
+              style={{ color: "#c8bfb0", marginBottom: "6px" }}
+            >
+              Invite for a <strong>{roleLabel(created.role)}</strong>
+              {created.inviteeName ? ` (${created.inviteeName})` : ""} — share
+              this link:
+            </div>
+            <div
+              style={{
+                wordBreak: "break-all",
+                fontFamily: "monospace",
+                fontSize: "0.85rem",
+                marginBottom: "8px",
+              }}
+            >
+              {linkFor(created.code)}
+            </div>
+            <div
+              className="flex gap-2"
+              style={{ alignItems: "center", flexWrap: "wrap" }}
+            >
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={() => copy(linkFor(created.code))}
+              >
+                Copy link
+              </button>
+              <span className="muted small">
+                or code:{" "}
+                <span style={{ fontFamily: "monospace", color: "#f0ebe3" }}>
+                  {prettyCode(created.code)}
+                </span>
+              </span>
+            </div>
+          </div>
+        )}
+        {msg && (
+          <p className="small mt-3" style={{ color: "#c8bfb0" }}>
+            {msg}
+          </p>
+        )}
+      </div>
+
+      {/* Pending invites */}
+      <div className="section-header mb-3">
+        <h4
+          style={{
+            fontFamily: "'Barlow Condensed',sans-serif",
+            fontSize: "1rem",
+            letterSpacing: "0.08em",
+            color: "#8a7a6a",
+          }}
+        >
+          PENDING INVITES ({pending.length})
+        </h4>
+        <div className="section-line" />
+      </div>
+      {pending.length === 0 ? (
+        <p className="muted small mb-4">No pending invites.</p>
+      ) : (
+        <div className="mb-4">
+          {pending.map((i) => (
+            <div
+              key={i.id}
+              className="card mb-2"
+              style={{ padding: "12px 16px" }}
+            >
+              <div className="flex-between">
+                <div>
+                  <span className="role-badge">{roleLabel(i.role)}</span>
+                  <span
+                    style={{
+                      marginLeft: "8px",
+                      fontWeight: 600,
+                      fontSize: "0.9rem",
+                    }}
+                  >
+                    {i.inviteeName || "Unnamed invite"}
+                  </span>
+                  <div className="muted small mt-1">
+                    Expires {fmt(i.expiresAt)}
+                    {i.role === "member" && i.coachId
+                      ? ` · coach: ${nameOf(i.coachId)}`
+                      : ""}
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    className="btn btn-ghost btn-xs"
+                    onClick={() => copy(linkFor(i.id))}
+                  >
+                    Copy link
+                  </button>
+                  <button
+                    className="btn btn-danger btn-xs"
+                    onClick={() => revoke(i.id)}
+                  >
+                    Revoke
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* People */}
+      {myRole === "admin" && (
+        <>
+          <div className="section-header mb-3">
+            <h4
+              style={{
+                fontFamily: "'Barlow Condensed',sans-serif",
+                fontSize: "1rem",
+                letterSpacing: "0.08em",
+                color: "#8a7a6a",
+              }}
+            >
+              COACHES &amp; ADMINS (
+              {people.filter((p) => p.role !== "member").length})
+            </h4>
+            <div className="section-line" />
+          </div>
+          <div className="mb-4">
+            {people
+              .filter((p) => p.role !== "member")
+              .map((p) => (
+                <div
+                  key={p.id}
+                  className="card mb-2"
+                  style={{ padding: "10px 16px" }}
+                >
+                  <div className="flex-between">
+                    <div>
+                      <span style={{ fontWeight: 600 }}>{p.name}</span>
+                      <span
+                        className="muted small"
+                        style={{ marginLeft: "8px" }}
+                      >
+                        {p.email}
+                      </span>
+                    </div>
+                    <span className="role-badge">{roleLabel(p.role)}</span>
+                  </div>
+                </div>
+              ))}
+          </div>
+        </>
+      )}
+      <div className="section-header mb-3">
+        <h4
+          style={{
+            fontFamily: "'Barlow Condensed',sans-serif",
+            fontSize: "1rem",
+            letterSpacing: "0.08em",
+            color: "#8a7a6a",
+          }}
+        >
+          CLIENTS ({clients.length})
+        </h4>
+        <div className="section-line" />
+      </div>
+      {clients.length === 0 ? (
+        <p className="muted small">
+          No clients yet. Create an invite above and share the link.
+        </p>
+      ) : (
+        clients.map((p) => (
+          <div
+            key={p.id}
+            className="card mb-2"
+            style={{ padding: "10px 16px" }}
+          >
+            <div className="flex-between">
+              <div>
+                <span style={{ fontWeight: 600 }}>{p.name}</span>
+                <span className="muted small" style={{ marginLeft: "8px" }}>
+                  {p.email}
+                </span>
+              </div>
+              <span className="muted small">Coach: {nameOf(p.coachId)}</span>
+            </div>
+          </div>
+        ))
+      )}
     </div>
   );
 }
