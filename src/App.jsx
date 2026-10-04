@@ -6,6 +6,7 @@ import {
   setDoc,
   updateDoc,
   deleteDoc,
+  onSnapshot,
   collection,
   query,
   where,
@@ -352,6 +353,150 @@ const makeCode = () => {
 };
 const prettyCode = (c) => (c.match(/.{1,5}/g) || []).join("-");
 
+// ─── Class results: one document per session ──────────────────────────────────
+// classResults/{sessionId} = { results: { "<block>|<member>": { "<variable>": "value" } },
+//                              saved:   { "<block>|<member>": true }, updatedAt }
+// Every write only touches ONE member's entry (merge), so two people logging at the same
+// time can never overwrite each other, and everyone watching sees changes live.
+function useClassResults(wodId) {
+  const [data, setData] = useState({ results: {}, saved: {} });
+  const [ready, setReady] = useState(false); // true once the first answer from the database has arrived
+  const [error, setError] = useState(""); // e.g. "permission-denied" when results can't be read
+
+  useEffect(() => {
+    setData({ results: {}, saved: {} });
+    setReady(false);
+    setError("");
+    if (wodId === undefined || wodId === null) return;
+    const unsub = onSnapshot(
+      doc(db, "classResults", String(wodId)),
+      (snap) => {
+        const d = snap.exists() ? snap.data() : {};
+        setData({ results: d.results || {}, saved: d.saved || {} });
+        setReady(true);
+        setError("");
+      },
+      (err) => {
+        console.error("Could not read class results:", err);
+        setError(err?.code || "error");
+        setReady(true);
+      },
+    );
+    return unsub;
+  }, [wodId]);
+
+  const ref = () => doc(db, "classResults", String(wodId));
+  const entry = (block, member) => `${block}|${member}`;
+  return {
+    ready,
+    error,
+    get: (block, member, variable) =>
+      data.results[entry(block, member)]?.[variable] || "",
+    isSaved: (block, member) => !!data.saved[entry(block, member)],
+    // one field (used by the admin results table)
+    setField: (block, member, variable, value) =>
+      setDoc(
+        ref(),
+        {
+          results: { [entry(block, member)]: { [variable]: value } },
+          saved: {},
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      ),
+    // a whole block for one member + mark it as done (used on Home)
+    saveBlock: (block, member, vals) => {
+      const payload = {
+        results: Object.keys(vals).length
+          ? { [entry(block, member)]: vals }
+          : {},
+        saved: { [entry(block, member)]: true },
+        updatedAt: serverTimestamp(),
+      };
+      return setDoc(ref(), payload, { merge: true });
+    },
+  };
+}
+
+// One-time move of the old single-blob results (riggworkout/cf_results + cf_saved_results)
+// into the per-session documents. Runs once, when an admin opens the app after the upgrade.
+async function migrateLegacyResults(validIds, onStart) {
+  const markerRef = doc(db, "riggworkout", "cf_migration");
+  const marker = await getDoc(markerRef);
+  if (marker.exists() && marker.data().resultsMigrated)
+    return { skipped: true, count: 0 };
+  onStart && onStart();
+
+  const [rSnap, sSnap] = await Promise.all([
+    getDoc(doc(db, "riggworkout", "cf_results")),
+    getDoc(doc(db, "riggworkout", "cf_saved_results")),
+  ]);
+  const legacyResults = rSnap.exists() ? rSnap.data().value || {} : {};
+  const legacySaved = sSnap.exists() ? sSnap.data().value || {} : {};
+
+  // legacy key = `${sessionId}_${block}_${member}` (the member name may itself contain "_")
+  const split = (key) => {
+    const i = key.indexOf("_");
+    const j = key.indexOf("_", i + 1);
+    return i < 0 || j < 0
+      ? null
+      : {
+          wod: key.slice(0, i),
+          block: key.slice(i + 1, j),
+          member: key.slice(j + 1),
+        };
+  };
+  const byWod = {};
+  const bucket = (wod) =>
+    (byWod[wod] = byWod[wod] || { results: {}, saved: {} });
+
+  Object.entries(legacyResults).forEach(([key, vals]) => {
+    const p = split(key);
+    if (!p || !validIds.has(p.wod) || !vals || typeof vals !== "object") return;
+    const clean = {};
+    Object.entries(vals).forEach(([variable, value]) => {
+      if (value !== "" && value != null) clean[variable] = String(value);
+    });
+    if (Object.keys(clean).length)
+      bucket(p.wod).results[`${p.block}|${p.member}`] = clean;
+  });
+  Object.entries(legacySaved).forEach(([key, flag]) => {
+    const p = split(key);
+    if (!p || !flag || !validIds.has(p.wod)) return;
+    bucket(p.wod).saved[`${p.block}|${p.member}`] = true;
+  });
+
+  let count = 0;
+  for (const wod of Object.keys(byWod)) {
+    const ref = doc(db, "classResults", wod);
+    const existing = await getDoc(ref);
+    const ex = existing.exists() ? existing.data() : {};
+    const results = {};
+    const saved = {};
+    // never overwrite anything that has already been logged in the new storage
+    Object.entries(byWod[wod].results).forEach(([k, v]) => {
+      if (!(ex.results && ex.results[k])) results[k] = v;
+    });
+    Object.entries(byWod[wod].saved).forEach(([k, v]) => {
+      if (!(ex.saved && ex.saved[k])) saved[k] = v;
+    });
+    if (Object.keys(results).length || Object.keys(saved).length) {
+      await setDoc(
+        ref,
+        { results, saved, updatedAt: serverTimestamp() },
+        { merge: true },
+      );
+      count++;
+    }
+  }
+  await setDoc(
+    markerRef,
+    { resultsMigrated: true, migratedAt: serverTimestamp() },
+    { merge: true },
+  );
+  return { skipped: false, count };
+}
+
 export default function App() {
   const [view, setView] = useState(() =>
     readInviteParam() ? "register" : "member",
@@ -445,57 +590,69 @@ export default function App() {
   };
   const [periods, setPeriods] = useState([DEMO_PERIOD]);
   const [activePeriodId, setActivePeriodId] = useState(DEMO_PERIOD.id);
-  const [results, setResults] = useState({});
   const [sessionMembers, setSessionMembers] = useState({});
   const [memberRoster, setMemberRoster] = useState(DEFAULT_MEMBERS);
-  const [savedResults, setSavedResults] = useState({});
   const [loaded, setLoaded] = useState(false);
+  const isAdminUser =
+    role === "admin" && !(profile && profile.active === false);
+  const [migration, setMigration] = useState(null); // {status: "running" | "done" | "error", count}
 
   useEffect(() => {
     (async () => {
       const p = await load("cf_periods");
-      const r = await load("cf_results");
       const sm = await load("cf_session_members");
       const mr = await load("cf_member_roster");
-      const sr = await load("cf_saved_results");
       if (p) setPeriods(p);
-      if (r) setResults(r);
       if (sm) setSessionMembers(sm);
       if (mr) setMemberRoster(mr);
-      if (sr) setSavedResults(sr);
       setLoaded(true);
     })();
   }, []);
 
+  // Planning data is only ever written by a signed-in admin (visitors never overwrite it)
   useEffect(() => {
-    if (loaded) save("cf_periods", periods);
-  }, [periods, loaded]);
+    if (loaded && isAdminUser) save("cf_periods", periods);
+  }, [periods, loaded, isAdminUser]);
   useEffect(() => {
-    if (loaded) save("cf_results", results);
-  }, [results, loaded]);
+    if (loaded && isAdminUser) save("cf_session_members", sessionMembers);
+  }, [sessionMembers, loaded, isAdminUser]);
   useEffect(() => {
-    if (loaded) save("cf_session_members", sessionMembers);
-  }, [sessionMembers, loaded]);
+    if (loaded && isAdminUser) save("cf_member_roster", memberRoster);
+  }, [memberRoster, loaded, isAdminUser]);
+
+  // One-time move of the old results blobs into per-session documents (runs for an admin only)
   useEffect(() => {
-    if (loaded) save("cf_member_roster", memberRoster);
-  }, [memberRoster, loaded]);
+    if (!loaded || !isAdminUser) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const validIds = new Set(
+          periods.flatMap((p) => p.workouts.map((w) => String(w.id))),
+        );
+        const r = await migrateLegacyResults(validIds, () => {
+          if (!cancelled) setMigration({ status: "running" });
+        });
+        if (!cancelled && !r.skipped)
+          setMigration({ status: "done", count: r.count });
+      } catch {
+        if (!cancelled) setMigration({ status: "error" });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded, isAdminUser]);
   useEffect(() => {
-    if (loaded) save("cf_saved_results", savedResults);
-  }, [savedResults, loaded]);
+    if (migration?.status !== "done") return;
+    const t = setTimeout(() => setMigration(null), 10000);
+    return () => clearTimeout(t);
+  }, [migration]);
 
   const activePeriod =
     periods.find((p) => p.id === activePeriodId) || periods[0];
   const allWorkouts = periods.flatMap((p) => p.workouts);
 
-  const updateResult = (wodId, blockName, member, variable, value) => {
-    const key = `${wodId}_${blockName}_${member}`;
-    setResults((prev) => ({
-      ...prev,
-      [key]: { ...(prev[key] || {}), [variable]: value },
-    }));
-  };
-  const getResult = (wodId, blockName, member, variable) =>
-    results[`${wodId}_${blockName}_${member}`]?.[variable] || "";
   const setSessionMembersForWod = (wodId, mems) =>
     setSessionMembers((prev) => ({ ...prev, [wodId]: mems }));
   const getSessionMembers = (wodId) => sessionMembers[wodId] || [];
@@ -509,7 +666,13 @@ export default function App() {
     setPeriods((prev) => [...prev, np]);
     setActivePeriodId(np.id);
   };
+  const dropClassResults = (wodId) => {
+    deleteDoc(doc(db, "classResults", String(wodId))).catch(() => {});
+  };
   const deletePeriod = (id) => {
+    (periods.find((p) => p.id === id)?.workouts || []).forEach((w) =>
+      dropClassResults(w.id),
+    );
     setPeriods((prev) => {
       const next = prev.filter((p) => p.id !== id);
       return next.length ? next : [EMPTY_PERIOD()];
@@ -536,7 +699,8 @@ export default function App() {
           : p,
       ),
     );
-  const deleteWorkout = (periodId, wodId) =>
+  const deleteWorkout = (periodId, wodId) => {
+    dropClassResults(wodId);
     setPeriods((prev) =>
       prev.map((p) =>
         p.id === periodId
@@ -544,6 +708,7 @@ export default function App() {
           : p,
       ),
     );
+  };
 
   if (!loaded || !authReady)
     return (
@@ -640,17 +805,41 @@ export default function App() {
           </div>
         </nav>
 
+        {migration && isAdminUser && (
+          <div
+            className="page"
+            style={{
+              position: "relative",
+              zIndex: 1,
+              paddingTop: "12px",
+              paddingBottom: 0,
+              maxWidth: "900px",
+            }}
+          >
+            <div
+              className="card"
+              style={{
+                padding: "10px 16px",
+                fontSize: "0.85rem",
+                color: migration.status === "error" ? "#ff7070" : "#c8bfb0",
+              }}
+            >
+              {migration.status === "running" &&
+                "Moving class results to the new storage… keep this page open for a moment."}
+              {migration.status === "done" &&
+                `Class results moved to the new storage (${migration.count} session${migration.count !== 1 ? "s" : ""}).`}
+              {migration.status === "error" &&
+                "Moving the class results didn't finish. Reload the page to try again. Nothing is lost."}
+            </div>
+          </div>
+        )}
+
         {current === "member" && (
           <MemberView
             allWorkouts={allWorkouts}
             periods={periods}
-            results={results}
-            updateResult={updateResult}
-            getResult={getResult}
             getSessionMembers={getSessionMembers}
             memberRoster={memberRoster}
-            savedResults={savedResults}
-            setSavedResults={setSavedResults}
           />
         )}
         {current === "loading" && (
@@ -706,9 +895,6 @@ export default function App() {
               addWorkout={addWorkout}
               updateWorkout={updateWorkout}
               deleteWorkout={deleteWorkout}
-              results={results}
-              updateResult={updateResult}
-              getResult={getResult}
               sessionMembers={sessionMembers}
               setSessionMembersForWod={setSessionMembersForWod}
               getSessionMembers={getSessionMembers}
@@ -3175,9 +3361,6 @@ function AdminView({
   addWorkout,
   updateWorkout,
   deleteWorkout,
-  results,
-  updateResult,
-  getResult,
   sessionMembers,
   setSessionMembersForWod,
   getSessionMembers,
@@ -3360,8 +3543,6 @@ function AdminView({
           updateWorkout={updateWorkout}
           addWorkout={addWorkout}
           deleteWorkout={deleteWorkout}
-          getResult={getResult}
-          updateResult={updateResult}
           getSessionMembers={getSessionMembers}
           setSessionMembersForWod={setSessionMembersForWod}
           memberRoster={memberRoster}
@@ -3385,11 +3566,7 @@ function AdminView({
         />
       )}
       {tab === "history" && (
-        <HistoryAdmin
-          periods={periods}
-          getResult={getResult}
-          getSessionMembers={getSessionMembers}
-        />
+        <HistoryAdmin periods={periods} getSessionMembers={getSessionMembers} />
       )}
     </div>
   );
@@ -3401,8 +3578,6 @@ function TodayAdmin({
   updateWorkout,
   addWorkout,
   deleteWorkout,
-  getResult,
-  updateResult,
   getSessionMembers,
   setSessionMembersForWod,
   memberRoster,
@@ -3467,8 +3642,6 @@ function TodayAdmin({
             deleteWorkout(period.id, wod.id);
             if (editing === wod.id) setEditing(null);
           }}
-          getResult={getResult}
-          updateResult={updateResult}
           getSessionMembers={getSessionMembers}
           setSessionMembersForWod={setSessionMembersForWod}
           memberRoster={memberRoster}
@@ -3485,12 +3658,11 @@ function WodEditor({
   onEdit,
   onSave,
   onDelete,
-  getResult,
-  updateResult,
   getSessionMembers,
   setSessionMembersForWod,
   memberRoster,
 }) {
+  const cr = useClassResults(wod.id);
   const [local, setLocal] = useState(wod);
   const members = getSessionMembers(wod.id);
   useEffect(() => setLocal(wod), [wod]);
@@ -3774,21 +3946,24 @@ function WodEditor({
                                 {(block.variables || []).map((v) => (
                                   <td key={v}>
                                     <input
-                                      value={getResult(
-                                        wod.id,
+                                      key={cr.get(block.name, member, v)}
+                                      defaultValue={cr.get(
                                         block.name,
                                         member,
                                         v,
                                       )}
-                                      onChange={(e) =>
-                                        updateResult(
-                                          wod.id,
-                                          block.name,
-                                          member,
-                                          v,
-                                          e.target.value,
+                                      onBlur={(e) => {
+                                        const nv = e.target.value;
+                                        if (
+                                          nv !== cr.get(block.name, member, v)
                                         )
-                                      }
+                                          cr.setField(
+                                            block.name,
+                                            member,
+                                            v,
+                                            nv,
+                                          ).catch(() => {});
+                                      }}
                                       placeholder="—"
                                     />
                                   </td>
@@ -4767,7 +4942,7 @@ function PlannerAdmin({
 }
 
 // ─── HISTORY ADMIN ─────────────────────────────────────────────────────────────
-function HistoryAdmin({ periods, getResult, getSessionMembers }) {
+function HistoryAdmin({ periods, getSessionMembers }) {
   const [selPeriod, setSelPeriod] = useState(periods[0]?.id);
   const [selWod, setSelWod] = useState(null);
   const today = todayStr();
@@ -4778,6 +4953,7 @@ function HistoryAdmin({ periods, getResult, getSessionMembers }) {
         .sort((a, b) => b.date.localeCompare(a.date))
     : [];
   const wod = past.find((w) => w.id === selWod);
+  const cr = useClassResults(wod?.id);
   return (
     <div>
       <div className="period-list mb-4">
@@ -4909,12 +5085,12 @@ function HistoryAdmin({ periods, getResult, getSessionMembers }) {
                                   <td
                                     key={v}
                                     style={{
-                                      color: getResult(wod.id, block.name, m, v)
+                                      color: cr.get(block.name, m, v)
                                         ? undefined
                                         : "#555",
                                     }}
                                   >
-                                    {getResult(wod.id, block.name, m, v) || "—"}
+                                    {cr.get(block.name, m, v) || "—"}
                                   </td>
                                 ))}
                               </tr>
@@ -4939,17 +5115,7 @@ function HistoryAdmin({ periods, getResult, getSessionMembers }) {
 }
 
 // ─── MEMBER VIEW ───────────────────────────────────────────────────────────────
-function MemberView({
-  allWorkouts,
-  periods,
-  results,
-  updateResult,
-  getResult,
-  getSessionMembers,
-  memberRoster,
-  savedResults,
-  setSavedResults,
-}) {
+function MemberView({ allWorkouts, periods, getSessionMembers, memberRoster }) {
   const today = todayStr();
   const todayMonday = getMondayOfWeek(today);
   const [weekOffset, setWeekOffset] = useState(0);
@@ -5003,9 +5169,18 @@ function MemberView({
   const period = periods.find((p) => p.workouts.some((w) => w.id === wod?.id));
   const sessionMems = wod ? getSessionMembers(wod.id) : [];
 
-  const blockSavedKey = (block) => `${wod?.id}_${block.name}_${memberName}`;
+  // Class results live in one document per session, with one entry per member and block
+  const cr = useClassResults(wod?.id);
+  const [drafts, setDrafts] = useState({}); // block name -> {variable: value} typed by the selected member
+  const [saveErr, setSaveErr] = useState("");
+  useEffect(() => {
+    setDrafts({});
+    setSaveErr("");
+  }, [wod?.id, memberName]);
+  const valueFor = (block, v) =>
+    drafts[block.name]?.[v] ?? cr.get(block.name, memberName, v);
   const isBlockSaved = (block) =>
-    !!(wod && memberName && savedResults[blockSavedKey(block)]);
+    !!(wod && memberName && cr.isSaved(block.name, memberName));
   const allBlocksSaved =
     wod &&
     memberName &&
@@ -5027,14 +5202,29 @@ function MemberView({
       setOpenBlockIdx(null);
       return;
     }
+    if (!cr.ready) return; // wait until this session's saved results have loaded
     const firstIncomplete = wod.blocks.findIndex((b) => !isBlockSaved(b));
     setOpenBlockIdx(firstIncomplete === -1 ? null : firstIncomplete);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wod?.id, memberName]);
+  }, [wod?.id, memberName, cr.ready]);
 
   const handleBlockDone = (bi) => {
     const block = wod.blocks[bi];
-    setSavedResults((p) => ({ ...p, [blockSavedKey(block)]: true }));
+    const vals = {};
+    (block.variables || []).forEach((v) => {
+      vals[v] = String(valueFor(block, v) ?? "")
+        .trim()
+        .slice(0, 200);
+    });
+    setSaveErr("");
+    // saved instantly on this device, then synced; if the database refuses it we say so
+    cr.saveBlock(block.name, memberName, vals).catch((err) => {
+      console.error("Saving results failed:", err);
+      setSaveErr(
+        `Your results could not be saved (${err?.code || "error"}). Check your connection and press Done again.`,
+      );
+      setOpenBlockIdx(bi); // bring the block back, with everything you typed still in it
+    });
     const next = bi + 1;
     if (next < wod.blocks.length) {
       setOpenBlockIdx(next);
@@ -5299,6 +5489,15 @@ function MemberView({
                   : "Past session"}
             </div>
           </div>
+          {cr.error && (
+            <div
+              className="mb-3"
+              style={{ color: "#ff7070", fontSize: "0.82rem" }}
+            >
+              Class results can't be loaded right now ({cr.error}). Please try
+              again in a moment.
+            </div>
+          )}
           {wod.blocks.map((block, bi) => {
             const saved = isBlockSaved(block);
             const open = openBlockIdx === bi;
@@ -5354,7 +5553,7 @@ function MemberView({
 
                 {memberName && (
                   <div style={{ marginLeft: "40px", marginTop: "12px" }}>
-                    {saved ? (
+                    {saved && !open ? (
                       <button
                         type="button"
                         onClick={() => setOpenBlockIdx(bi)}
@@ -5392,26 +5591,32 @@ function MemberView({
                             <div key={v}>
                               <label>{v}</label>
                               <input
-                                value={getResult(
-                                  wod.id,
-                                  block.name,
-                                  memberName,
-                                  v,
-                                )}
+                                value={valueFor(block, v)}
                                 onChange={(e) =>
-                                  updateResult(
-                                    wod.id,
-                                    block.name,
-                                    memberName,
-                                    v,
-                                    e.target.value,
-                                  )
+                                  setDrafts((p) => ({
+                                    ...p,
+                                    [block.name]: {
+                                      ...(p[block.name] || {}),
+                                      [v]: e.target.value,
+                                    },
+                                  }))
                                 }
                                 placeholder={`Enter ${v.toLowerCase()}`}
                               />
                             </div>
                           ))}
                         </div>
+                        {saveErr && (
+                          <div
+                            style={{
+                              color: "#ff7070",
+                              fontSize: "0.82rem",
+                              marginTop: "10px",
+                            }}
+                          >
+                            {saveErr}
+                          </div>
+                        )}
                         <button
                           className="btn btn-primary mt-3 w-full"
                           style={{ justifyContent: "center" }}
@@ -5542,12 +5747,12 @@ function MemberView({
                               <td
                                 key={v}
                                 style={{
-                                  color: getResult(wod.id, block.name, m, v)
+                                  color: cr.get(block.name, m, v)
                                     ? undefined
                                     : "#444",
                                 }}
                               >
-                                {getResult(wod.id, block.name, m, v) || "—"}
+                                {cr.get(block.name, m, v) || "—"}
                               </td>
                             ))}
                           </tr>
