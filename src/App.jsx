@@ -4,6 +4,7 @@ import {
   doc,
   getDoc,
   setDoc,
+  updateDoc,
   deleteDoc,
   collection,
   query,
@@ -1211,7 +1212,7 @@ function RegisterView({
   );
 }
 
-// ─── CLIENTS (invites + people; private plans arrive in step 3) ────────────────
+// ─── CLIENTS (people, invites and private plans) ───────────────────────────────
 function ClientsView({ profile, authUser, org }) {
   const myRole = profile.role,
     orgId = profile.orgId,
@@ -1226,6 +1227,8 @@ function ClientsView({ profile, authUser, org }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const [created, setCreated] = useState(null);
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [openClientId, setOpenClientId] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -1334,6 +1337,19 @@ function ClientsView({ profile, authUser, org }) {
     }
   };
 
+  const openClient = clients.find((c) => c.id === openClientId);
+  if (openClient) {
+    return (
+      <ClientPlan
+        client={openClient}
+        profile={profile}
+        authUser={authUser}
+        coachName={nameOf(openClient.coachId)}
+        onBack={() => setOpenClientId(null)}
+      />
+    );
+  }
+
   return (
     <div
       className="page"
@@ -1345,7 +1361,7 @@ function ClientsView({ profile, authUser, org }) {
           {myRole === "admin"
             ? "Everyone in your organization"
             : "Your clients"}{" "}
-          · private plans arrive in the next step
+          · open a client to plan their sessions
         </p>
       </div>
 
@@ -1360,114 +1376,125 @@ function ClientsView({ profile, authUser, org }) {
 
       {/* Create invite */}
       <div className="card mb-4">
-        <h3
-          style={{ fontSize: "1rem", color: "#FF6B1A", marginBottom: "12px" }}
-        >
-          Invite someone
-        </h3>
-        <div className="grid-2">
-          <div>
-            <label htmlFor="inv-role">Role</label>
-            {myRole === "admin" ? (
-              <select
-                id="inv-role"
-                value={role}
-                onChange={(e) => setRole(e.target.value)}
-              >
-                <option value="member">Client</option>
-                <option value="coach">Coach</option>
-              </select>
-            ) : (
-              <select id="inv-role" value="member" disabled>
-                <option value="member">Client</option>
-              </select>
-            )}
-          </div>
-          <div>
-            <label htmlFor="inv-name">Name (optional)</label>
-            <input
-              id="inv-name"
-              value={inviteeName}
-              onChange={(e) => setInviteeName(e.target.value)}
-              placeholder="Who is this for?"
-            />
-          </div>
-          {myRole === "admin" && role === "member" && (
-            <div>
-              <label htmlFor="inv-coach">Responsible coach</label>
-              <select
-                id="inv-coach"
-                value={coachId}
-                onChange={(e) => setCoachId(e.target.value)}
-              >
-                <option value={uid}>Me ({profile.name || "admin"})</option>
-                {coaches.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-        </div>
         <div
-          className="flex gap-3 mt-3"
-          style={{ alignItems: "center", flexWrap: "wrap" }}
+          className="flex-between"
+          style={{ marginBottom: inviteOpen ? "12px" : 0 }}
         >
+          <h3 style={{ fontSize: "1rem", color: "#FF6B1A" }}>Invite someone</h3>
           <button
-            className="btn btn-primary"
-            disabled={busy}
-            onClick={createInvite}
-            style={{ opacity: busy ? 0.6 : 1 }}
+            className="btn btn-ghost btn-sm"
+            onClick={() => setInviteOpen((o) => !o)}
           >
-            {busy ? "Creating…" : "Create invite"}
+            {inviteOpen ? "Hide" : "+ New invite"}
           </button>
-          <span className="muted small">
-            Invites are valid for 7 days and can be used once.
-          </span>
         </div>
-
-        {created && (
-          <div
-            className="card card-orange mt-4"
-            style={{ padding: "14px 16px" }}
-          >
-            <div
-              className="small"
-              style={{ color: "#c8bfb0", marginBottom: "6px" }}
-            >
-              Invite for a <strong>{roleLabel(created.role)}</strong>
-              {created.inviteeName ? ` (${created.inviteeName})` : ""} — share
-              this link:
+        {inviteOpen && (
+          <>
+            <div className="grid-2">
+              <div>
+                <label htmlFor="inv-role">Role</label>
+                {myRole === "admin" ? (
+                  <select
+                    id="inv-role"
+                    value={role}
+                    onChange={(e) => setRole(e.target.value)}
+                  >
+                    <option value="member">Client</option>
+                    <option value="coach">Coach</option>
+                  </select>
+                ) : (
+                  <select id="inv-role" value="member" disabled>
+                    <option value="member">Client</option>
+                  </select>
+                )}
+              </div>
+              <div>
+                <label htmlFor="inv-name">Name (optional)</label>
+                <input
+                  id="inv-name"
+                  value={inviteeName}
+                  onChange={(e) => setInviteeName(e.target.value)}
+                  placeholder="Who is this for?"
+                />
+              </div>
+              {myRole === "admin" && role === "member" && (
+                <div>
+                  <label htmlFor="inv-coach">Responsible coach</label>
+                  <select
+                    id="inv-coach"
+                    value={coachId}
+                    onChange={(e) => setCoachId(e.target.value)}
+                  >
+                    <option value={uid}>Me ({profile.name || "admin"})</option>
+                    {coaches.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
             </div>
             <div
-              style={{
-                wordBreak: "break-all",
-                fontFamily: "monospace",
-                fontSize: "0.85rem",
-                marginBottom: "8px",
-              }}
-            >
-              {linkFor(created.code)}
-            </div>
-            <div
-              className="flex gap-2"
+              className="flex gap-3 mt-3"
               style={{ alignItems: "center", flexWrap: "wrap" }}
             >
               <button
-                className="btn btn-ghost btn-sm"
-                onClick={() => copy(linkFor(created.code))}
+                className="btn btn-primary"
+                disabled={busy}
+                onClick={createInvite}
+                style={{ opacity: busy ? 0.6 : 1 }}
               >
-                Copy link
+                {busy ? "Creating…" : "Create invite"}
               </button>
               <span className="muted small">
-                or code:{" "}
-                <span style={{ fontFamily: "monospace", color: "#f0ebe3" }}>
-                  {prettyCode(created.code)}
-                </span>
+                Invites are valid for 7 days and can be used once.
               </span>
             </div>
-          </div>
+
+            {created && (
+              <div
+                className="card card-orange mt-4"
+                style={{ padding: "14px 16px" }}
+              >
+                <div
+                  className="small"
+                  style={{ color: "#c8bfb0", marginBottom: "6px" }}
+                >
+                  Invite for a <strong>{roleLabel(created.role)}</strong>
+                  {created.inviteeName ? ` (${created.inviteeName})` : ""} —
+                  share this link:
+                </div>
+                <div
+                  style={{
+                    wordBreak: "break-all",
+                    fontFamily: "monospace",
+                    fontSize: "0.85rem",
+                    marginBottom: "8px",
+                  }}
+                >
+                  {linkFor(created.code)}
+                </div>
+                <div
+                  className="flex gap-2"
+                  style={{ alignItems: "center", flexWrap: "wrap" }}
+                >
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => copy(linkFor(created.code))}
+                  >
+                    Copy link
+                  </button>
+                  <span className="muted small">
+                    or code:{" "}
+                    <span style={{ fontFamily: "monospace", color: "#f0ebe3" }}>
+                      {prettyCode(created.code)}
+                    </span>
+                  </span>
+                </div>
+              </div>
+            )}
+          </>
         )}
         {msg && (
           <p className="small mt-3" style={{ color: "#c8bfb0" }}>
@@ -1612,11 +1639,646 @@ function ClientsView({ profile, authUser, org }) {
                 <span className="muted small" style={{ marginLeft: "8px" }}>
                   {p.email}
                 </span>
+                <div className="muted small">Coach: {nameOf(p.coachId)}</div>
               </div>
-              <span className="muted small">Coach: {nameOf(p.coachId)}</span>
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={() => setOpenClientId(p.id)}
+              >
+                Open plan →
+              </button>
             </div>
           </div>
         ))
+      )}
+    </div>
+  );
+}
+
+// ─── CLIENT PLAN (a coach's private schedule for one client) ───────────────────
+function ClientPlan({ client, profile, authUser, coachName, onBack }) {
+  const today = todayStr();
+  const orgId = profile.orgId;
+  const [workouts, setWorkouts] = useState([]);
+  const [loadErr, setLoadErr] = useState("");
+  const [tick, setTick] = useState(0);
+  const [weekStart, setWeekStart] = useState(getMondayOfWeek(today));
+  const [editing, setEditing] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [formErr, setFormErr] = useState("");
+  const [confirmDel, setConfirmDel] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const base = [
+          where("orgId", "==", orgId),
+          where("clientId", "==", client.id),
+        ];
+        const q =
+          profile.role === "coach"
+            ? query(
+                collection(db, "clientWorkouts"),
+                ...base,
+                where("coachId", "==", authUser.uid),
+              )
+            : query(collection(db, "clientWorkouts"), ...base);
+        const snap = await getDocs(q);
+        if (!cancelled) {
+          setWorkouts(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+          setLoadErr("");
+        }
+      } catch {
+        if (!cancelled)
+          setLoadErr(
+            "Could not load this client's sessions. Check your connection and the Firestore rules.",
+          );
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [client.id, orgId, profile.role, authUser.uid, tick]);
+
+  const byDate = {};
+  workouts.forEach((w) => {
+    (byDate[w.date] = byDate[w.date] || []).push(w);
+  });
+  Object.values(byDate).forEach((list) =>
+    list.sort(
+      (a, b) =>
+        (a.createdAt?.toMillis?.() || 0) - (b.createdAt?.toMillis?.() || 0),
+    ),
+  );
+  const weekDates = getWeekDates(weekStart);
+  const wkStartD = new Date(weekDates[0] + "T12:00:00"),
+    wkEndD = new Date(weekDates[6] + "T12:00:00");
+  const weekLabel = `${wkStartD.getDate()} ${MONTHS[wkStartD.getMonth()].slice(0, 3)} – ${wkEndD.getDate()} ${MONTHS[wkEndD.getMonth()].slice(0, 3)}`;
+  const upcoming = workouts
+    .filter((w) => w.date >= today)
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .slice(0, 10);
+  const recent = workouts
+    .filter((w) => w.date < today)
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .slice(0, 8);
+
+  // wid given -> edit that session; otherwise add a new one (max 2 per day)
+  const openDay = (date, wid) => {
+    const list = byDate[date] || [];
+    if (!wid && list.length >= 2) return;
+    const ex = wid ? list.find((w) => w.id === wid) : null;
+    setFormErr("");
+    setConfirmDel(false);
+    setWeekStart(getMondayOfWeek(date));
+    setEditing(
+      ex
+        ? {
+            id: ex.id,
+            date: ex.date,
+            title: ex.title || "",
+            blocks: (ex.blocks || []).map((b) => ({
+              ...b,
+              variables: [...(b.variables || [])],
+            })),
+            results: ex.results || null,
+          }
+        : {
+            date,
+            title: "",
+            blocks: [
+              {
+                name: "A",
+                description: "",
+                variables: ["Rounds", "Weight (kg)"],
+              },
+            ],
+            results: null,
+          },
+    );
+  };
+
+  const setBlock = (i, patch) =>
+    setEditing((p) => ({
+      ...p,
+      blocks: p.blocks.map((b, j) => (j === i ? { ...b, ...patch } : b)),
+    }));
+  const toggleVar = (i, v) =>
+    setEditing((p) => ({
+      ...p,
+      blocks: p.blocks.map((b, j) => {
+        if (j !== i) return b;
+        const cur = b.variables || [];
+        return {
+          ...b,
+          variables: cur.includes(v) ? cur.filter((x) => x !== v) : [...cur, v],
+        };
+      }),
+    }));
+  const addBlock = () =>
+    setEditing((p) => {
+      const next = ["A", "B", "C", "D"].find(
+        (n) => !p.blocks.some((b) => b.name === n),
+      );
+      return next
+        ? {
+            ...p,
+            blocks: [
+              ...p.blocks,
+              { name: next, description: "", variables: ["Rounds"] },
+            ],
+          }
+        : p;
+    });
+  const removeBlock = (i) =>
+    setEditing((p) => ({ ...p, blocks: p.blocks.filter((_, j) => j !== i) }));
+
+  const save = async () => {
+    setFormErr("");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(editing.date || "")) {
+      setFormErr("Pick a date.");
+      return;
+    }
+    if (!editing.blocks.length) {
+      setFormErr("Add at least one block.");
+      return;
+    }
+    if (editing.blocks.some((b) => !b.description.trim())) {
+      setFormErr("Every block needs a description.");
+      return;
+    }
+    if (
+      workouts.filter((w) => w.date === editing.date && w.id !== editing.id)
+        .length >= 2
+    ) {
+      setFormErr(
+        "A day can have at most 2 sessions. Pick another date or open one of the existing sessions.",
+      );
+      return;
+    }
+    setSaving(true);
+    const blocks = editing.blocks.map((b) => ({
+      name: b.name,
+      description: b.description.trim(),
+      variables: b.variables || [],
+    }));
+    const base = {
+      date: editing.date,
+      title: (editing.title || "").trim(),
+      blocks,
+    };
+    try {
+      if (editing.id) {
+        await updateDoc(doc(db, "clientWorkouts", editing.id), {
+          ...base,
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        await setDoc(doc(collection(db, "clientWorkouts")), {
+          ...base,
+          orgId,
+          clientId: client.id,
+          coachId: client.coachId,
+          createdBy: authUser.uid,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
+      setWeekStart(getMondayOfWeek(base.date));
+      setEditing(null);
+      setTick((t) => t + 1);
+    } catch {
+      setFormErr(
+        "Could not save. Check your permissions and connection, then try again.",
+      );
+    }
+    setSaving(false);
+  };
+
+  const del = async () => {
+    if (!confirmDel) {
+      setConfirmDel(true);
+      return;
+    }
+    try {
+      await deleteDoc(doc(db, "clientWorkouts", editing.id));
+      setEditing(null);
+      setTick((t) => t + 1);
+    } catch {
+      setFormErr("Could not delete the session.");
+    }
+  };
+
+  const sessionRow = (w) => (
+    <div
+      key={w.id}
+      className="card mb-2"
+      style={{ padding: "10px 16px", cursor: "pointer" }}
+      onClick={() => openDay(w.date, w.id)}
+    >
+      <div className="flex-between">
+        <div>
+          <span className="session-tag" style={{ fontSize: "0.72rem" }}>
+            {formatDate(w.date)}
+          </span>
+          <span
+            style={{ marginLeft: "8px", fontWeight: 600, fontSize: "0.9rem" }}
+          >
+            {w.title || "Session"}
+          </span>
+        </div>
+        <span className="muted small">
+          {(w.blocks || []).length} block
+          {(w.blocks || []).length !== 1 ? "s" : ""}
+          {w.results ? " · results logged" : ""}
+        </span>
+      </div>
+    </div>
+  );
+
+  return (
+    <div
+      className="page"
+      style={{ position: "relative", zIndex: 1, maxWidth: "900px" }}
+    >
+      <button className="btn btn-ghost btn-sm mb-3" onClick={onBack}>
+        ← All clients
+      </button>
+      <div className="mb-4">
+        <h1 style={{ fontSize: "2rem", color: "#FF6B1A" }}>{client.name}</h1>
+        <p className="muted small">
+          {client.email} · Coach: {coachName}
+        </p>
+      </div>
+
+      {loadErr && (
+        <div
+          className="card mb-4"
+          style={{ color: "#ff7070", fontSize: "0.85rem" }}
+        >
+          {loadErr}
+        </div>
+      )}
+
+      <div className="flex-between mb-3">
+        <h3 style={{ fontSize: "1.15rem" }}>{weekLabel}</h3>
+        <div className="flex gap-2">
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={() => setWeekStart(addDays(weekStart, -7))}
+          >
+            ← Prev
+          </button>
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={() => setWeekStart(getMondayOfWeek(today))}
+          >
+            This week
+          </button>
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={() => setWeekStart(addDays(weekStart, 7))}
+          >
+            Next →
+          </button>
+        </div>
+      </div>
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fill,minmax(105px,1fr))",
+          gap: "8px",
+          marginBottom: "28px",
+        }}
+      >
+        {weekDates.map((date, i) => {
+          const list = byDate[date] || [];
+          const d = new Date(date + "T12:00:00");
+          return (
+            <div
+              key={date}
+              role="button"
+              tabIndex={0}
+              className={`week-day-card ${date === today ? "today-card" : ""} ${list.length ? "has-wod-card" : ""}`}
+              style={{ position: "relative" }}
+              onClick={() => {
+                if (list.length <= 1) openDay(date, list[0]?.id);
+              }}
+              onKeyDown={(e) => {
+                if ((e.key === "Enter" || e.key === " ") && list.length <= 1) {
+                  e.preventDefault();
+                  openDay(date, list[0]?.id);
+                }
+              }}
+            >
+              {date === today && (
+                <span
+                  style={{
+                    position: "absolute",
+                    top: "6px",
+                    right: "6px",
+                    fontSize: "0.6rem",
+                    fontWeight: 800,
+                    letterSpacing: "0.05em",
+                    color: "#FF6B1A",
+                  }}
+                >
+                  ● TODAY
+                </span>
+              )}
+              <div
+                style={{
+                  fontSize: "0.72rem",
+                  color: "#8a7a6a",
+                  fontWeight: 700,
+                  textTransform: "uppercase",
+                  marginBottom: "4px",
+                }}
+              >
+                {DAYS[i]}
+              </div>
+              <div
+                style={{
+                  fontSize: "1.2rem",
+                  fontWeight: 700,
+                  marginBottom: "6px",
+                }}
+              >
+                {d.getDate()}
+              </div>
+              {list.length > 0 ? (
+                <>
+                  {list.map((w, k) => (
+                    <div
+                      key={w.id}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openDay(date, w.id);
+                      }}
+                      style={{ marginBottom: "8px", cursor: "pointer" }}
+                    >
+                      <div style={{ fontSize: "0.75rem", color: "#c8bfb0" }}>
+                        {w.title || `Session ${k + 1}`}
+                      </div>
+                      <div
+                        style={{
+                          marginTop: "4px",
+                          display: "flex",
+                          gap: "3px",
+                        }}
+                      >
+                        {(w.blocks || []).map((b) => (
+                          <span
+                            key={b.name}
+                            style={{
+                              width: "12px",
+                              height: "12px",
+                              borderRadius: "3px",
+                              background: BLOCK_COLORS[b.name] || "#FF6B1A",
+                              display: "inline-block",
+                            }}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                  {list.length < 2 && (
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-xs"
+                      style={{
+                        fontSize: "0.65rem",
+                        padding: "3px 6px",
+                        whiteSpace: "normal",
+                        lineHeight: 1.2,
+                        textAlign: "left",
+                      }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openDay(date);
+                      }}
+                    >
+                      + Add session
+                    </button>
+                  )}
+                </>
+              ) : (
+                <div
+                  style={{
+                    fontSize: "0.75rem",
+                    color: "rgba(255,255,255,0.2)",
+                    marginTop: "8px",
+                  }}
+                >
+                  + Add session
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="section-header mb-3">
+        <h4
+          style={{
+            fontFamily: "'Barlow Condensed',sans-serif",
+            fontSize: "1rem",
+            letterSpacing: "0.08em",
+            color: "#8a7a6a",
+          }}
+        >
+          UPCOMING SESSIONS
+        </h4>
+        <div className="section-line" />
+      </div>
+      {upcoming.length === 0 ? (
+        <p className="muted small mb-4">
+          Nothing scheduled yet. Click a day above to add a session.
+        </p>
+      ) : (
+        <div className="mb-4">{upcoming.map(sessionRow)}</div>
+      )}
+
+      {recent.length > 0 && (
+        <>
+          <div className="section-header mb-3">
+            <h4
+              style={{
+                fontFamily: "'Barlow Condensed',sans-serif",
+                fontSize: "1rem",
+                letterSpacing: "0.08em",
+                color: "#8a7a6a",
+              }}
+            >
+              RECENT SESSIONS
+            </h4>
+            <div className="section-line" />
+          </div>
+          {recent.map(sessionRow)}
+        </>
+      )}
+
+      {editing && (
+        <div
+          className="modal-overlay"
+          onClick={(e) => e.target === e.currentTarget && setEditing(null)}
+        >
+          <div className="modal-inner">
+            <div
+              className="modal-header flex-between"
+              style={{ flexWrap: "wrap", gap: "10px" }}
+            >
+              <h3 style={{ color: "#FF6B1A" }}>
+                {editing.id ? "Edit session" : "New session"}
+              </h3>
+              <div className="flex gap-2">
+                {editing.id && (
+                  <button className="btn btn-danger btn-sm" onClick={del}>
+                    {confirmDel ? "Confirm delete" : "Delete"}
+                  </button>
+                )}
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setEditing(null)}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="btn btn-primary btn-sm"
+                  disabled={saving}
+                  onClick={save}
+                  style={{ opacity: saving ? 0.6 : 1 }}
+                >
+                  {saving ? "Saving…" : "Save"}
+                </button>
+              </div>
+            </div>
+            <div className="modal-body">
+              {formErr && (
+                <div
+                  style={{
+                    color: "#ff7070",
+                    fontSize: "0.85rem",
+                    marginBottom: "12px",
+                  }}
+                >
+                  {formErr}
+                </div>
+              )}
+              {workouts.some(
+                (w) => w.date === editing.date && w.id !== editing.id,
+              ) && (
+                <p className="muted small mb-3">
+                  This day already has another session. A day can have at most
+                  2.
+                </p>
+              )}
+              <div className="grid-2 mb-3">
+                <div>
+                  <label htmlFor="cw-title">Title</label>
+                  <input
+                    id="cw-title"
+                    value={editing.title}
+                    onChange={(e) =>
+                      setEditing((p) => ({ ...p, title: e.target.value }))
+                    }
+                    placeholder="e.g. Lower body strength"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="cw-date">Date</label>
+                  <input
+                    id="cw-date"
+                    type="date"
+                    value={editing.date}
+                    onChange={(e) =>
+                      setEditing((p) => ({ ...p, date: e.target.value }))
+                    }
+                  />
+                </div>
+              </div>
+              {editing.blocks.map((block, idx) => (
+                <div key={block.name} className="card card-orange mb-3">
+                  <div className="flex-between mb-2">
+                    <span
+                      style={{
+                        fontWeight: 700,
+                        color: BLOCK_COLORS[block.name] || "#FF6B1A",
+                      }}
+                    >
+                      Block {block.name}
+                    </span>
+                    <button
+                      className="btn btn-danger btn-xs"
+                      onClick={() => removeBlock(idx)}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <div className="flex gap-2 mb-2" style={{ flexWrap: "wrap" }}>
+                    <span
+                      className="muted small"
+                      style={{ alignSelf: "center" }}
+                    >
+                      Templates:
+                    </span>
+                    {Object.keys(BLOCK_TEMPLATES).map((name) => (
+                      <button
+                        key={name}
+                        type="button"
+                        className="btn btn-ghost btn-xs"
+                        onClick={() =>
+                          setBlock(idx, {
+                            description: BLOCK_TEMPLATES[name].description,
+                            variables: BLOCK_TEMPLATES[name].variables,
+                          })
+                        }
+                      >
+                        {name}
+                      </button>
+                    ))}
+                  </div>
+                  <textarea
+                    value={block.description}
+                    onChange={(e) =>
+                      setBlock(idx, { description: e.target.value })
+                    }
+                    placeholder="Block description…"
+                    style={{ marginBottom: "8px" }}
+                  />
+                  <div className="flex flex-wrap gap-2">
+                    {RESULT_VARS.map((v) => (
+                      <label key={v} className="check-var">
+                        <input
+                          type="checkbox"
+                          checked={(block.variables || []).includes(v)}
+                          onChange={() => toggleVar(idx, v)}
+                        />
+                        {v}
+                      </label>
+                    ))}
+                  </div>
+                  {editing.results?.[block.name] && (
+                    <div className="small mt-2" style={{ color: "#7dde7d" }}>
+                      Client's result:{" "}
+                      {Object.entries(editing.results[block.name])
+                        .filter(([, v]) => v)
+                        .map(([k, v]) => `${k}: ${v}`)
+                        .join(" · ") || "—"}
+                    </div>
+                  )}
+                </div>
+              ))}
+              {editing.blocks.length < 4 && (
+                <button className="btn btn-ghost btn-sm" onClick={addBlock}>
+                  + Add Block
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -1867,10 +2529,16 @@ function TodayAdmin({
   memberRoster,
 }) {
   const today = todayStr();
-  const todayWods = period.workouts.filter((w) => w.date === today);
+  const todayWods = period.workouts
+    .filter((w) => w.date === today)
+    .sort(
+      (a, b) => (a.sessionNumber || 0) - (b.sessionNumber || 0) || a.id - b.id,
+    );
+  const canAddMore = todayWods.length < 2;
   const [editing, setEditing] = useState(null);
 
   const startNew = () => {
+    if (!canAddMore) return;
     const nums = period.workouts.map((w) => w.sessionNumber);
     const next = nums.length ? Math.max(...nums) + 1 : 1;
     const wod = { ...EMPTY_WOD(), sessionNumber: next, date: today };
@@ -1887,10 +2555,18 @@ function TodayAdmin({
             <p className="muted small mt-1">Focus: {period.focus}</p>
           )}
         </div>
-        <button className="btn btn-primary" onClick={startNew}>
+        <button
+          className="btn btn-primary"
+          onClick={startNew}
+          disabled={!canAddMore}
+          style={!canAddMore ? { opacity: 0.45, cursor: "not-allowed" } : {}}
+        >
           + New WoD
         </button>
       </div>
+      {!canAddMore && (
+        <p className="muted small mb-3">A day can have at most 2 sessions.</p>
+      )}
       {todayWods.length === 0 && (
         <div className="card text-center" style={{ padding: "40px" }}>
           <div style={{ fontSize: "2rem", marginBottom: "8px" }}>💪</div>
@@ -1940,6 +2616,7 @@ function WodEditor({
   const members = getSessionMembers(wod.id);
   useEffect(() => setLocal(wod), [wod]);
   const [expandedBlocks, setExpandedBlocks] = useState({});
+  const [confirmDel, setConfirmDel] = useState(false);
   const toggleBlockView = (name) =>
     setExpandedBlocks((p) => ({ ...p, [name]: !p[name] }));
 
@@ -2045,8 +2722,25 @@ function WodEditor({
               Save
             </button>
           )}
-          <button className="btn btn-danger btn-sm" onClick={onDelete}>
-            Delete
+          {confirmDel && (
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={() => setConfirmDel(false)}
+            >
+              Keep
+            </button>
+          )}
+          <button
+            className="btn btn-danger btn-sm"
+            onClick={() => {
+              if (!confirmDel) {
+                setConfirmDel(true);
+                return;
+              }
+              onDelete();
+            }}
+          >
+            {confirmDel ? "Confirm delete" : "Delete"}
           </button>
         </div>
       </div>
@@ -2521,15 +3215,26 @@ function PlannerAdmin({
   const [selDate, setSelDate] = useState(null);
   const [editWod, setEditWod] = useState(null);
   const [modalTab, setModalTab] = useState("wod"); // "wod" | "participants"
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const weekStart = addDays(periodMonday, weekOffset * 7);
   const weekDates = getWeekDates(weekStart);
-  const wodForDate = (date) => period.workouts.find((w) => w.date === date);
+  const wodsForDate = (date) =>
+    period.workouts
+      .filter((w) => w.date === date)
+      .sort(
+        (a, b) =>
+          (a.sessionNumber || 0) - (b.sessionNumber || 0) || a.id - b.id,
+      );
 
-  const openDay = (date) => {
+  // wodId given -> edit that session; otherwise add a new one (max 2 per day)
+  const openDay = (date, wodId) => {
+    const list = wodsForDate(date);
+    if (!wodId && list.length >= 2) return;
     setSelDate(date);
     setModalTab("wod");
-    const ex = wodForDate(date);
+    setConfirmDelete(false);
+    const ex = wodId ? list.find((w) => w.id === wodId) : null;
     if (ex) {
       setEditWod({ ...ex, blocks: ex.blocks.map((b) => ({ ...b })) });
     } else {
@@ -2542,14 +3247,18 @@ function PlannerAdmin({
     }
   };
   const saveWod = () => {
-    const ex = wodForDate(selDate);
-    if (ex) updateWorkout(period.id, editWod);
+    const exists = period.workouts.some((w) => w.id === editWod.id);
+    if (exists) updateWorkout(period.id, editWod);
     else addWorkout(period.id, editWod);
     setSelDate(null);
     setEditWod(null);
   };
   const deleteDay = () => {
-    const ex = wodForDate(selDate);
+    const ex = period.workouts.find((w) => w.id === editWod.id);
+    if (ex && !confirmDelete) {
+      setConfirmDelete(true);
+      return;
+    } // saved sessions need a second click to confirm
     if (ex) {
       deleteWorkout(period.id, ex.id);
       setSessionMembersForWod(ex.id, []);
@@ -2627,14 +3336,15 @@ function PlannerAdmin({
         }}
       >
         {weekDates.map((date, i) => {
-          const wod = wodForDate(date);
+          const list = wodsForDate(date);
           const d = new Date(date + "T12:00:00");
-          const participants = wod ? getSessionMembers(wod.id) : [];
           return (
             <div
               key={date}
-              className={`week-day-card ${date === today ? "today-card" : ""} ${wod ? "has-wod-card" : ""}`}
-              onClick={() => openDay(date)}
+              className={`week-day-card ${date === today ? "today-card" : ""} ${list.length ? "has-wod-card" : ""}`}
+              onClick={() => {
+                if (list.length <= 1) openDay(date, list[0]?.id);
+              }}
               style={{ position: "relative" }}
             >
               {date === today && (
@@ -2672,49 +3382,87 @@ function PlannerAdmin({
               >
                 {d.getDate()}
               </div>
-              {wod ? (
+              {list.length > 0 ? (
                 <>
-                  <div
-                    className="session-tag"
-                    style={{ fontSize: "0.68rem", padding: "2px 7px" }}
-                  >
-                    #{wod.sessionNumber}
-                  </div>
-                  <div
-                    style={{
-                      fontSize: "0.75rem",
-                      marginTop: "4px",
-                      color: "#c8bfb0",
-                    }}
-                  >
-                    {wod.title || "WoD"}
-                  </div>
-                  <div
-                    style={{ marginTop: "6px", display: "flex", gap: "3px" }}
-                  >
-                    {wod.blocks.map((b) => (
-                      <span
-                        key={b.name}
-                        style={{
-                          width: "12px",
-                          height: "12px",
-                          borderRadius: "3px",
-                          background: BLOCK_COLORS[b.name] || "#FF6B1A",
-                          display: "inline-block",
+                  {list.map((wod) => {
+                    const participants = getSessionMembers(wod.id);
+                    return (
+                      <div
+                        key={wod.id}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openDay(date, wod.id);
                         }}
-                      />
-                    ))}
-                  </div>
-                  {participants.length > 0 && (
-                    <div
+                        style={{ marginBottom: "8px", cursor: "pointer" }}
+                      >
+                        <div
+                          className="session-tag"
+                          style={{ fontSize: "0.68rem", padding: "2px 7px" }}
+                        >
+                          #{wod.sessionNumber}
+                        </div>
+                        <div
+                          style={{
+                            fontSize: "0.75rem",
+                            marginTop: "4px",
+                            color: "#c8bfb0",
+                          }}
+                        >
+                          {wod.title || "WoD"}
+                        </div>
+                        <div
+                          style={{
+                            marginTop: "6px",
+                            display: "flex",
+                            gap: "3px",
+                          }}
+                        >
+                          {wod.blocks.map((b) => (
+                            <span
+                              key={b.name}
+                              style={{
+                                width: "12px",
+                                height: "12px",
+                                borderRadius: "3px",
+                                background: BLOCK_COLORS[b.name] || "#FF6B1A",
+                                display: "inline-block",
+                              }}
+                            />
+                          ))}
+                        </div>
+                        {participants.length > 0 && (
+                          <div
+                            style={{
+                              marginTop: "6px",
+                              fontSize: "0.68rem",
+                              color: "#FF9A4D",
+                            }}
+                          >
+                            👥 {participants.length}/16
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {list.length < 2 && (
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-xs"
                       style={{
-                        marginTop: "6px",
-                        fontSize: "0.68rem",
-                        color: "#FF9A4D",
+                        marginTop: "2px",
+                        fontSize: "0.65rem",
+                        padding: "3px 6px",
+                        whiteSpace: "normal",
+                        lineHeight: 1.2,
+                        textAlign: "left",
+                      }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openDay(date);
                       }}
                     >
-                      👥 {participants.length}/16
-                    </div>
+                      + Add session
+                    </button>
                   )}
                 </>
               ) : (
@@ -2756,7 +3504,10 @@ function PlannerAdmin({
         }}
       >
         {allWeeks.map((week, wi) => {
-          const wods = week.filter((d) => wodForDate(d));
+          const sessionCount = week.reduce(
+            (n, d) => n + wodsForDate(d).length,
+            0,
+          );
           const s = new Date(week[0] + "T12:00:00"),
             e = new Date(week[6] + "T12:00:00");
           return (
@@ -2781,7 +3532,7 @@ function PlannerAdmin({
                     }}
                   >
                     {week.map((d) => {
-                      const w = wodForDate(d);
+                      const w = wodsForDate(d).length > 0;
                       return (
                         <span
                           key={d}
@@ -2797,7 +3548,7 @@ function PlannerAdmin({
                     })}
                   </div>
                   <span className="muted small">
-                    {wods.length} session{wods.length !== 1 ? "s" : ""}
+                    {sessionCount} session{sessionCount !== 1 ? "s" : ""}
                   </span>
                 </div>
               </div>
@@ -2823,7 +3574,7 @@ function PlannerAdmin({
               <h3 style={{ color: "#FF6B1A" }}>{formatDate(selDate)}</h3>
               <div className="flex gap-2">
                 <button className="btn btn-danger btn-sm" onClick={deleteDay}>
-                  Delete
+                  {confirmDelete ? "Confirm delete" : "Delete"}
                 </button>
                 <button
                   className="btn btn-ghost btn-sm"
@@ -3357,8 +4108,19 @@ function MemberView({
     }
   }, [weekOffset]);
 
-  const wodForDate = (date) => allWorkouts.find((w) => w.date === date);
-  const wod = wodForDate(selectedDate);
+  const wodsForDate = (date) =>
+    allWorkouts
+      .filter((w) => w.date === date)
+      .sort(
+        (a, b) =>
+          (a.sessionNumber || 0) - (b.sessionNumber || 0) || a.id - b.id,
+      );
+  const dayWods = wodsForDate(selectedDate);
+  const [sessionIdx, setSessionIdx] = useState(0);
+  useEffect(() => {
+    setSessionIdx(0);
+  }, [selectedDate]); // always start on the first session of a day
+  const wod = dayWods[Math.min(sessionIdx, Math.max(dayWods.length - 1, 0))];
   const period = periods.find((p) => p.workouts.some((w) => w.id === wod?.id));
   const sessionMems = wod ? getSessionMembers(wod.id) : [];
 
@@ -3376,6 +4138,9 @@ function MemberView({
   const [openClassResults, setOpenClassResults] = useState({});
   const toggleClassResults = (name) =>
     setOpenClassResults((p) => ({ ...p, [name]: !p[name] }));
+  useEffect(() => {
+    setOpenClassResults({});
+  }, [wod?.id]);
 
   // When the WoD or the selected member changes, jump to the first not-yet-logged block
   useEffect(() => {
@@ -3517,7 +4282,7 @@ function MemberView({
           }}
         >
           {weekDates.map((date, i) => {
-            const hasWod = !!wodForDate(date);
+            const dayCount = wodsForDate(date).length;
             const isSel = date === selectedDate;
             const isTod = date === today;
             return (
@@ -3550,24 +4315,42 @@ function MemberView({
                 <span style={{ fontSize: "0.9rem", fontWeight: 700 }}>
                   {new Date(date + "T12:00:00").getDate()}
                 </span>
-                <span
-                  style={{
-                    width: "5px",
-                    height: "5px",
-                    borderRadius: "50%",
-                    background: hasWod
-                      ? isSel
-                        ? "#fff"
-                        : "#FF6B1A"
-                      : "transparent",
-                    display: "block",
-                  }}
-                />
+                <span style={{ display: "flex", gap: "3px", height: "5px" }}>
+                  {Array.from({ length: Math.min(dayCount, 2) }).map((_, k) => (
+                    <span
+                      key={k}
+                      style={{
+                        width: "5px",
+                        height: "5px",
+                        borderRadius: "50%",
+                        background: isSel ? "#fff" : "#FF6B1A",
+                        display: "block",
+                      }}
+                    />
+                  ))}
+                </span>
               </button>
             );
           })}
         </div>
       </div>
+
+      {/* Two sessions on the same day: pick which one to view */}
+      {dayWods.length > 1 && (
+        <div className="flex gap-2 mb-3" style={{ flexWrap: "wrap" }}>
+          {dayWods.map((w, i) => (
+            <button
+              key={w.id}
+              type="button"
+              className={`period-pill ${wod?.id === w.id ? "active" : ""}`}
+              onClick={() => setSessionIdx(i)}
+            >
+              Session {i + 1}
+              {w.title ? ` · ${w.title}` : ""}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Member selector — above the WoD card, always visible without scrolling */}
       {wod && (
