@@ -563,6 +563,7 @@ export default function App() {
 
   // Which screen is actually shown (derived, so the nav highlight always matches)
   const PROTECTED = ["classes", "clients", "myplan"];
+  const deactivated = !!profile && profile.active === false;
   let current = view;
   if (
     authUser &&
@@ -571,19 +572,27 @@ export default function App() {
   )
     current = "loading";
   else if (view === "login" && authUser)
-    current = profile ? homeFor(role) : "account";
+    current = profile
+      ? deactivated
+        ? "deactivated"
+        : homeFor(role)
+      : "account";
   if (PROTECTED.includes(current) && authUser && profile === false)
     current = "account";
+  if (PROTECTED.includes(current) && authUser && deactivated)
+    current = "deactivated";
   if (PROTECTED.includes(current) && !authUser) current = "login";
 
   const tabs = [{ id: "member", label: "Home" }];
-  if (role === "admin")
-    tabs.push(
-      { id: "classes", label: "Classes" },
-      { id: "clients", label: "Clients" },
-    );
-  else if (role === "coach") tabs.push({ id: "clients", label: "Clients" });
-  else if (role === "member") tabs.push({ id: "myplan", label: "My Plan" });
+  if (!deactivated) {
+    if (role === "admin")
+      tabs.push(
+        { id: "classes", label: "Classes" },
+        { id: "clients", label: "Clients" },
+      );
+    else if (role === "coach") tabs.push({ id: "clients", label: "Clients" });
+    else if (role === "member") tabs.push({ id: "myplan", label: "My Plan" });
+  }
 
   const noAccess = <NoAccess />;
 
@@ -611,7 +620,11 @@ export default function App() {
                 <span className="nav-user">
                   {profile?.name || authUser.email}
                 </span>
-                {role && <span className="role-badge">{roleLabel(role)}</span>}
+                {role && (
+                  <span className="role-badge">
+                    {deactivated ? "inactive" : roleLabel(role)}
+                  </span>
+                )}
                 <button className="nav-tab" onClick={logout}>
                   Log out
                 </button>
@@ -676,6 +689,9 @@ export default function App() {
             error={profileError}
             onLogout={logout}
           />
+        )}
+        {current === "deactivated" && (
+          <DeactivatedNotice email={authUser?.email} onLogout={logout} />
         )}
         {current === "classes" &&
           (role === "admin" ? (
@@ -883,6 +899,48 @@ function AccountNotice({ email, error, onLogout }) {
           Log out
         </button>
       </div>
+    </div>
+  );
+}
+
+function DeactivatedNotice({ email, onLogout }) {
+  return (
+    <div
+      className="page"
+      style={{ position: "relative", zIndex: 1, maxWidth: "560px" }}
+    >
+      <div className="card text-center" style={{ padding: "32px" }}>
+        <h2
+          style={{ fontSize: "1.5rem", color: "#FF6B1A", marginBottom: "8px" }}
+        >
+          ACCOUNT DEACTIVATED
+        </h2>
+        <p className="muted small">
+          The account{email ? ` ${email}` : ""} has been deactivated. If you
+          think this is a mistake, contact your admin.
+        </p>
+        <button className="btn btn-ghost mt-4" onClick={onLogout}>
+          Log out
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SectionTitle({ children }) {
+  return (
+    <div className="section-header mb-3">
+      <h4
+        style={{
+          fontFamily: "'Barlow Condensed',sans-serif",
+          fontSize: "1rem",
+          letterSpacing: "0.08em",
+          color: "#8a7a6a",
+        }}
+      >
+        {children}
+      </h4>
+      <div className="section-line" />
     </div>
   );
 }
@@ -1229,6 +1287,11 @@ function ClientsView({ profile, authUser, org }) {
   const [created, setCreated] = useState(null);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [openClientId, setOpenClientId] = useState(null);
+  const [busyId, setBusyId] = useState(null);
+  const [pendingCoach, setPendingCoach] = useState({});
+  const [confirmId, setConfirmId] = useState(null);
+  const [showInactive, setShowInactive] = useState(false);
+  const [peopleMsg, setPeopleMsg] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -1272,8 +1335,20 @@ function ClientsView({ profile, authUser, org }) {
     id === uid
       ? profile.name || "me"
       : people.find((p) => p.id === id)?.name || "—";
-  const coaches = people.filter((p) => p.role === "coach");
+  const isInactive = (p) => p.active === false;
+  const activeCoaches = people.filter(
+    (p) => p.role === "coach" && !isInactive(p),
+  );
+  const coaches = activeCoaches;
   const clients = people.filter((p) => p.role === "member");
+  const activeClients = clients.filter((p) => !isInactive(p));
+  const inactivePeople = people.filter(
+    (p) => p.role !== "admin" && isInactive(p),
+  );
+  const coachOk = (cid) =>
+    cid === uid || activeCoaches.some((c) => c.id === cid);
+  const orphaned =
+    myRole === "admin" ? activeClients.filter((c) => !coachOk(c.coachId)) : [];
   const pending = invites.filter(
     (i) =>
       !i.used && i.expiresAt?.toMillis && i.expiresAt.toMillis() > Date.now(),
@@ -1336,6 +1411,120 @@ function ClientsView({ profile, authUser, org }) {
       setMsg("Could not revoke the invite.");
     }
   };
+
+  const setActive = async (person, active) => {
+    setBusyId(person.id);
+    setPeopleMsg("");
+    try {
+      await updateDoc(doc(db, "users", person.id), {
+        active,
+        statusChangedAt: serverTimestamp(),
+        statusChangedBy: uid,
+      });
+      setConfirmId(null);
+      setPeopleMsg(
+        active
+          ? `${person.name} has been reactivated.`
+          : `${person.name} has been deactivated. Their sessions and results are kept.`,
+      );
+      setTick((t) => t + 1);
+    } catch {
+      setPeopleMsg(
+        "Could not update that account. Check your permissions and connection.",
+      );
+    }
+    setBusyId(null);
+  };
+
+  // Moves a client to another coach: first their sessions (in small batches), then the client's profile.
+  // If something fails halfway, nothing is lost: just run the same move again.
+  const reassign = async (client, newCoachId) => {
+    setBusyId(client.id);
+    setPeopleMsg("");
+    try {
+      const ws = await getDocs(
+        query(
+          collection(db, "clientWorkouts"),
+          where("orgId", "==", orgId),
+          where("clientId", "==", client.id),
+        ),
+      );
+      const toMove = ws.docs.filter((d) => d.data().coachId !== newCoachId);
+      for (let i = 0; i < toMove.length; i += 8) {
+        const batch = writeBatch(db);
+        toMove
+          .slice(i, i + 8)
+          .forEach((d) =>
+            batch.update(d.ref, {
+              coachId: newCoachId,
+              updatedAt: serverTimestamp(),
+            }),
+          );
+        await batch.commit();
+      }
+      await updateDoc(doc(db, "users", client.id), {
+        coachId: newCoachId,
+        statusChangedAt: serverTimestamp(),
+        statusChangedBy: uid,
+      });
+      setPendingCoach((p) => {
+        const n = { ...p };
+        delete n[client.id];
+        return n;
+      });
+      setPeopleMsg(
+        `${client.name} now has ${nameOf(newCoachId)} as coach${toMove.length ? ` (${toMove.length} session${toMove.length !== 1 ? "s" : ""} moved)` : ""}.`,
+      );
+    } catch {
+      setPeopleMsg(
+        "The move didn't finish. Nothing is lost. Choose the coach again and press Save to complete it.",
+      );
+    }
+    setTick((t) => t + 1);
+    setBusyId(null);
+  };
+
+  const coachOptions = () => (
+    <>
+      <option value={uid}>Me ({profile.name || "admin"})</option>
+      {activeCoaches.map((c) => (
+        <option key={c.id} value={c.id}>
+          {c.name}
+        </option>
+      ))}
+    </>
+  );
+
+  const deactivateControls = (p, warning) =>
+    confirmId === p.id ? (
+      <>
+        {warning && (
+          <span className="small" style={{ color: "#ff9c9c" }}>
+            {warning}
+          </span>
+        )}
+        <button
+          className="btn btn-ghost btn-sm"
+          onClick={() => setConfirmId(null)}
+        >
+          Keep
+        </button>
+        <button
+          className="btn btn-danger btn-sm"
+          disabled={busyId === p.id}
+          onClick={() => setActive(p, false)}
+        >
+          Confirm deactivate
+        </button>
+      </>
+    ) : (
+      <button
+        className="btn btn-danger btn-sm"
+        onClick={() => setConfirmId(p.id)}
+      >
+        Deactivate
+      </button>
+    );
 
   const openClient = clients.find((c) => c.id === openClientId);
   if (openClient) {
@@ -1567,9 +1756,200 @@ function ClientsView({ profile, authUser, org }) {
       )}
 
       {/* People */}
+      {peopleMsg && (
+        <p className="small mb-3" style={{ color: "#c8bfb0" }}>
+          {peopleMsg}
+        </p>
+      )}
+
+      {myRole === "admin" && orphaned.length > 0 && (
+        <>
+          <SectionTitle>NEEDS A NEW COACH ({orphaned.length})</SectionTitle>
+          <div className="mb-4">
+            {orphaned.map((c) => (
+              <div
+                key={c.id}
+                className="card card-orange mb-2"
+                style={{ padding: "10px 16px" }}
+              >
+                <div className="flex-between">
+                  <div>
+                    <span style={{ fontWeight: 600 }}>{c.name}</span>
+                    <span className="muted small" style={{ marginLeft: "8px" }}>
+                      {c.email}
+                    </span>
+                    <div className="muted small">
+                      Previous coach: {nameOf(c.coachId)} (inactive)
+                    </div>
+                  </div>
+                  <div
+                    className="flex gap-2"
+                    style={{ alignItems: "center", flexWrap: "wrap" }}
+                  >
+                    <select
+                      aria-label={`New coach for ${c.name}`}
+                      value={pendingCoach[c.id] || ""}
+                      onChange={(e) =>
+                        setPendingCoach((p) => ({
+                          ...p,
+                          [c.id]: e.target.value,
+                        }))
+                      }
+                      style={{ width: "auto", minWidth: "150px" }}
+                    >
+                      <option value="">Choose coach…</option>
+                      {coachOptions()}
+                    </select>
+                    <button
+                      className="btn btn-primary btn-sm"
+                      disabled={!pendingCoach[c.id] || busyId === c.id}
+                      onClick={() => reassign(c, pendingCoach[c.id])}
+                    >
+                      {busyId === c.id ? "Assigning…" : "Assign"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
       {myRole === "admin" && (
         <>
-          <div className="section-header mb-3">
+          <SectionTitle>
+            COACHES &amp; ADMINS (
+            {people.filter((p) => p.role !== "member" && !isInactive(p)).length}
+            )
+          </SectionTitle>
+          <div className="mb-4">
+            {people
+              .filter((p) => p.role !== "member" && !isInactive(p))
+              .map((p) => {
+                const n = activeClients.filter(
+                  (c) => c.coachId === p.id,
+                ).length;
+                return (
+                  <div
+                    key={p.id}
+                    className="card mb-2"
+                    style={{ padding: "10px 16px" }}
+                  >
+                    <div className="flex-between">
+                      <div>
+                        <span style={{ fontWeight: 600 }}>{p.name}</span>
+                        <span
+                          className="muted small"
+                          style={{ marginLeft: "8px" }}
+                        >
+                          {p.email}
+                        </span>
+                        <div className="muted small">
+                          {n} client{n !== 1 ? "s" : ""}
+                        </div>
+                      </div>
+                      <div
+                        className="flex gap-2"
+                        style={{ alignItems: "center", flexWrap: "wrap" }}
+                      >
+                        <span className="role-badge">{roleLabel(p.role)}</span>
+                        {p.role === "coach" &&
+                          deactivateControls(
+                            p,
+                            n > 0
+                              ? `${n} client${n !== 1 ? "s" : ""} will need a new coach.`
+                              : "",
+                          )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+          </div>
+        </>
+      )}
+
+      <SectionTitle>
+        CLIENTS (
+        {myRole === "admin"
+          ? activeClients.length - orphaned.length
+          : activeClients.length}
+        )
+      </SectionTitle>
+      {activeClients.length - orphaned.length === 0 ? (
+        <p className="muted small mb-4">
+          No clients yet. Create an invite above and share the link.
+        </p>
+      ) : (
+        <div className="mb-4">
+          {activeClients
+            .filter((c) => myRole !== "admin" || coachOk(c.coachId))
+            .map((c) => (
+              <div
+                key={c.id}
+                className="card mb-2"
+                style={{ padding: "10px 16px" }}
+              >
+                <div className="flex-between">
+                  <div>
+                    <span style={{ fontWeight: 600 }}>{c.name}</span>
+                    <span className="muted small" style={{ marginLeft: "8px" }}>
+                      {c.email}
+                    </span>
+                    {myRole !== "admin" && (
+                      <div className="muted small">
+                        Coach: {nameOf(c.coachId)}
+                      </div>
+                    )}
+                  </div>
+                  <div
+                    className="flex gap-2"
+                    style={{ alignItems: "center", flexWrap: "wrap" }}
+                  >
+                    {myRole === "admin" && (
+                      <>
+                        <select
+                          aria-label={`Coach for ${c.name}`}
+                          value={pendingCoach[c.id] ?? c.coachId}
+                          onChange={(e) =>
+                            setPendingCoach((p) => ({
+                              ...p,
+                              [c.id]: e.target.value,
+                            }))
+                          }
+                          style={{ width: "auto", minWidth: "140px" }}
+                        >
+                          {coachOptions()}
+                        </select>
+                        {pendingCoach[c.id] &&
+                          pendingCoach[c.id] !== c.coachId && (
+                            <button
+                              className="btn btn-primary btn-sm"
+                              disabled={busyId === c.id}
+                              onClick={() => reassign(c, pendingCoach[c.id])}
+                            >
+                              {busyId === c.id ? "Moving…" : "Save"}
+                            </button>
+                          )}
+                      </>
+                    )}
+                    <button
+                      className="btn btn-primary btn-sm"
+                      onClick={() => setOpenClientId(c.id)}
+                    >
+                      Open plan →
+                    </button>
+                    {myRole === "admin" && deactivateControls(c, "")}
+                  </div>
+                </div>
+              </div>
+            ))}
+        </div>
+      )}
+
+      {myRole === "admin" && inactivePeople.length > 0 && (
+        <>
+          <div className="flex-between mb-3">
             <h4
               style={{
                 fontFamily: "'Barlow Condensed',sans-serif",
@@ -1578,78 +1958,44 @@ function ClientsView({ profile, authUser, org }) {
                 color: "#8a7a6a",
               }}
             >
-              COACHES &amp; ADMINS (
-              {people.filter((p) => p.role !== "member").length})
+              INACTIVE ({inactivePeople.length})
             </h4>
-            <div className="section-line" />
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={() => setShowInactive((o) => !o)}
+            >
+              {showInactive ? "Hide" : "Show"}
+            </button>
           </div>
-          <div className="mb-4">
-            {people
-              .filter((p) => p.role !== "member")
-              .map((p) => (
-                <div
-                  key={p.id}
-                  className="card mb-2"
-                  style={{ padding: "10px 16px" }}
-                >
-                  <div className="flex-between">
-                    <div>
-                      <span style={{ fontWeight: 600 }}>{p.name}</span>
-                      <span
-                        className="muted small"
-                        style={{ marginLeft: "8px" }}
-                      >
-                        {p.email}
-                      </span>
-                    </div>
-                    <span className="role-badge">{roleLabel(p.role)}</span>
-                  </div>
-                </div>
-              ))}
-          </div>
-        </>
-      )}
-      <div className="section-header mb-3">
-        <h4
-          style={{
-            fontFamily: "'Barlow Condensed',sans-serif",
-            fontSize: "1rem",
-            letterSpacing: "0.08em",
-            color: "#8a7a6a",
-          }}
-        >
-          CLIENTS ({clients.length})
-        </h4>
-        <div className="section-line" />
-      </div>
-      {clients.length === 0 ? (
-        <p className="muted small">
-          No clients yet. Create an invite above and share the link.
-        </p>
-      ) : (
-        clients.map((p) => (
-          <div
-            key={p.id}
-            className="card mb-2"
-            style={{ padding: "10px 16px" }}
-          >
-            <div className="flex-between">
-              <div>
-                <span style={{ fontWeight: 600 }}>{p.name}</span>
-                <span className="muted small" style={{ marginLeft: "8px" }}>
-                  {p.email}
-                </span>
-                <div className="muted small">Coach: {nameOf(p.coachId)}</div>
-              </div>
-              <button
-                className="btn btn-primary btn-sm"
-                onClick={() => setOpenClientId(p.id)}
+          {showInactive &&
+            inactivePeople.map((p) => (
+              <div
+                key={p.id}
+                className="card mb-2"
+                style={{ padding: "10px 16px", opacity: 0.85 }}
               >
-                Open plan →
-              </button>
-            </div>
-          </div>
-        ))
+                <div className="flex-between">
+                  <div>
+                    <span style={{ fontWeight: 600 }}>{p.name}</span>
+                    <span className="muted small" style={{ marginLeft: "8px" }}>
+                      {p.email}
+                    </span>
+                    <div className="muted small">
+                      {roleLabel(p.role)} · deactivated {fmt(p.statusChangedAt)}
+                      . Sessions and results are kept.
+                    </div>
+                  </div>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    disabled={busyId === p.id}
+                    onClick={() => setActive(p, true)}
+                  >
+                    Reactivate
+                  </button>
+                </div>
+              </div>
+            ))}
+        </>
       )}
     </div>
   );
