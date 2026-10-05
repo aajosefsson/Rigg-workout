@@ -76,7 +76,18 @@ const BLOCK_TEMPLATES = {
     description: "EMOM 10:\nOdd minutes: [Movement]\nEven minutes: [Movement]",
     variables: ["Reps", "Weight (kg)", "Comment"],
   },
+  Strength: {
+    description: "[Exercise]\n5 sets x 5 reps\nRest 2-3 min between sets",
+    variables: ["Weight (kg)", "Reps", "Comment"],
+    sets: 5,
+  },
 };
+// A template always sets the block's number of sets too (1 = log everything once)
+const templatePatch = (name) => ({
+  description: BLOCK_TEMPLATES[name].description,
+  variables: BLOCK_TEMPLATES[name].variables,
+  sets: BLOCK_TEMPLATES[name].sets || 1,
+});
 const EMPTY_BLOCK = () => ({
   name: "A",
   description: "",
@@ -353,6 +364,496 @@ const makeCode = () => {
 };
 const prettyCode = (c) => (c.match(/.{1,5}/g) || []).join("-");
 
+// ─── Detailed result fields ────────────────────────────────────────────────────
+// Some fields are asked once per block ("Rounds", "Comment"). Weight, reps, time and distance
+// can be asked per SET (block.sets > 1), per EXERCISE (block.exercises = ["Squat", ...]), or both.
+// Stored under keys like "Weight (kg)", "Weight (kg)#2" (set 2), "Weight (kg)@3" (exercise 3)
+// and "Weight (kg)#2@3" (set 2 of exercise 3).
+const PER_SET_ORDER = ["Weight (kg)", "Reps", "Time", "Distance (m)"];
+const SET_SHORT = {
+  "Weight (kg)": "kg",
+  Reps: "reps",
+  Time: "time",
+  "Distance (m)": "m",
+};
+const blockSets = (block) =>
+  Math.max(1, Math.min(10, Number(block?.sets) || 1));
+const exercisesOf = (block) =>
+  Array.isArray(block?.exercises)
+    ? block.exercises
+        .map((e) => (typeof e === "string" ? e.trim() : ""))
+        .filter(Boolean)
+    : [];
+const isDetailed = (block) =>
+  blockSets(block) > 1 || exercisesOf(block).length > 0;
+const perSetVarsOf = (block) =>
+  isDetailed(block)
+    ? PER_SET_ORDER.filter((v) => (block.variables || []).includes(v))
+    : [];
+const singleVarsOf = (block) =>
+  (block.variables || []).filter((v) => !perSetVarsOf(block).includes(v));
+const entryKey = (v, setNo, exNo) =>
+  `${v}${setNo ? `#${setNo}` : ""}${exNo ? `@${exNo}` : ""}`;
+const shortName = (v) => v.replace(/ \(.*\)/, "").toLowerCase();
+const setNumbers = (block) =>
+  blockSets(block) > 1
+    ? Array.from({ length: blockSets(block) }, (_, i) => i + 1)
+    : [0];
+const exerciseGroups = (block) => {
+  const ex = exercisesOf(block);
+  return ex.length
+    ? ex.map((name, i) => ({ name, no: i + 1 }))
+    : [{ name: "", no: 0 }];
+};
+const cleanBlock = (b) => ({ ...b, exercises: exercisesOf(b) }); // run when a session is saved: no empty names
+
+// Every input a member fills in for a block, in order, with a readable label
+const fieldList = (block) => {
+  const per = perSetVarsOf(block),
+    out = [];
+  if (per.length)
+    exerciseGroups(block).forEach((g) =>
+      setNumbers(block).forEach((sn) =>
+        per.forEach((v) =>
+          out.push({
+            key: entryKey(v, sn, g.no),
+            label: [g.name, sn ? `Set ${sn}` : "", v]
+              .filter(Boolean)
+              .join(" · "),
+          }),
+        ),
+      ),
+    );
+  singleVarsOf(block).forEach((v) => out.push({ key: v, label: v }));
+  return out;
+};
+const fieldKeys = (block) => fieldList(block).map((f) => f.key);
+
+// "90 kg · 5 reps" for one set of one exercise
+const formatCell = (per, setNo, exNo, get) => {
+  const parts = [];
+  per.forEach((v) => {
+    const val = String(get(entryKey(v, setNo, exNo)) || "").trim();
+    if (!val) return;
+    parts.push(
+      v === "Weight (kg)"
+        ? `${val} kg`
+        : v === "Reps"
+          ? `${val} reps`
+          : v === "Distance (m)"
+            ? `${val} m`
+            : val,
+    );
+  });
+  return parts.join(" · ");
+};
+
+// Columns for a read-only results table
+const resultColumns = (block) => {
+  const per = perSetVarsOf(block),
+    exs = exercisesOf(block),
+    cols = [];
+  if (per.length && exs.length) {
+    exs.forEach((name, i) =>
+      cols.push({
+        label: name,
+        cell: (get) =>
+          setNumbers(block)
+            .map((sn) => {
+              const t = formatCell(per, sn, i + 1, get);
+              return t ? (sn ? `S${sn}: ${t}` : t) : "";
+            })
+            .filter(Boolean)
+            .join("\n"),
+      }),
+    );
+  } else if (per.length) {
+    setNumbers(block).forEach((sn) =>
+      cols.push({
+        label: `Set ${sn}`,
+        cell: (get) => formatCell(per, sn, 0, get),
+      }),
+    );
+  }
+  if (per.length)
+    singleVarsOf(block).forEach((v) =>
+      cols.push({ label: v, cell: (get) => get(v) }),
+    );
+  else
+    (block.variables || []).forEach((v) =>
+      cols.push({ label: v, cell: (get) => get(v) }),
+    );
+  return cols;
+};
+
+// Values that were logged under a different setup than the block has now (so nothing is ever hidden)
+const orphanEntries = (block, all) => {
+  const known = new Set(fieldKeys(block));
+  return Object.entries(all || {}).filter(
+    ([k, v]) => !known.has(k) && String(v ?? "").trim(),
+  );
+};
+
+// One line of text for the coach, e.g. "Squat: S1 90 kg · 5 reps / S2 100 kg · 5 reps · Comment: heavy"
+const describeResults = (block, get, all) => {
+  const per = perSetVarsOf(block),
+    exs = exercisesOf(block),
+    out = [];
+  if (per.length && exs.length) {
+    exs.forEach((name, i) => {
+      const t = setNumbers(block)
+        .map((sn) => {
+          const c = formatCell(per, sn, i + 1, get);
+          return c ? (sn ? `S${sn} ${c}` : c) : "";
+        })
+        .filter(Boolean)
+        .join(" / ");
+      if (t) out.push(`${name}: ${t}`);
+    });
+  } else if (per.length) {
+    setNumbers(block).forEach((sn) => {
+      const t = formatCell(per, sn, 0, get);
+      if (t) out.push(`Set ${sn}: ${t}`);
+    });
+  }
+  singleVarsOf(block).forEach((v) => {
+    const t = String(get(v) || "").trim();
+    if (t) out.push(`${v}: ${t}`);
+  });
+  const other = orphanEntries(block, all);
+  if (other.length)
+    out.push(
+      `Logged under an earlier setup: ${other.map(([k, v]) => `${k} ${v}`).join(", ")}`,
+    );
+  return out.join(" · ");
+};
+
+// What the coach is asking members to fill in, in plain words
+const describeFields = (block) => {
+  const per = perSetVarsOf(block),
+    singles = singleVarsOf(block),
+    exs = exercisesOf(block),
+    sets = blockSets(block),
+    parts = [];
+  if (per.length) {
+    const what = per.map(shortName).join(" and ");
+    parts.push(
+      exs.length
+        ? `${what} for each of ${exs.length} exercise${exs.length !== 1 ? "s" : ""}${sets > 1 ? `, ${sets} sets each` : ""}`
+        : `${what} for each of ${sets} sets`,
+    );
+  }
+  if (singles.length) parts.push(`${singles.map(shortName).join(", ")} once`);
+  return parts.length
+    ? `Members log: ${parts.join(", then ")}.`
+    : "No result fields chosen. Members just mark the block as done.";
+};
+
+// Coach side: which fields to ask for, per set and/or per exercise
+function ResultFieldsEditor({ block, onChange, hasResults }) {
+  const vars = block.variables || [];
+  const sets = blockSets(block);
+  const exercises = Array.isArray(block.exercises) ? block.exercises : [];
+  const canDetail = PER_SET_ORDER.some((v) => vars.includes(v));
+  const toggle = (v) =>
+    onChange({
+      variables: vars.includes(v) ? vars.filter((x) => x !== v) : [...vars, v],
+    });
+  const hasNumbered = /^\s*\d+\s*[.)]\s*\S/m.test(block.description || "");
+  const fromDescription = () => {
+    const names = String(block.description || "")
+      .split("\n")
+      .map((l) => l.trim().match(/^\d+\s*[.)]\s*(.+)$/))
+      .filter(Boolean)
+      .map((m) => m[1].replace(/^\d+\s*(reps?|x)\s+/i, "").trim())
+      .filter(Boolean)
+      .slice(0, 6);
+    if (names.length) onChange({ exercises: names });
+  };
+  return (
+    <div>
+      <div className="flex flex-wrap gap-2">
+        {RESULT_VARS.map((v) => (
+          <label key={v} className="check-var">
+            <input
+              type="checkbox"
+              checked={vars.includes(v)}
+              onChange={() => toggle(v)}
+            />
+            {v}
+          </label>
+        ))}
+      </div>
+      {canDetail && (
+        <>
+          <div
+            className="flex gap-2 mt-2"
+            style={{ alignItems: "center", flexWrap: "wrap" }}
+          >
+            <span className="muted small">Log per set:</span>
+            <select
+              aria-label="Log per set"
+              value={sets}
+              onChange={(e) => onChange({ sets: Number(e.target.value) })}
+              style={{ width: "auto", padding: "4px 8px" }}
+            >
+              <option value={1}>Off</option>
+              {[2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
+                <option key={n} value={n}>
+                  {n} sets
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="mt-3">
+            <div className="muted small" style={{ marginBottom: "6px" }}>
+              Log each exercise separately (optional):
+            </div>
+            {exercises.map((name, i) => (
+              <div
+                key={i}
+                className="flex gap-2 mb-2"
+                style={{ alignItems: "center" }}
+              >
+                <span
+                  className="muted small"
+                  style={{ width: "18px", flexShrink: 0 }}
+                >
+                  {i + 1}.
+                </span>
+                <input
+                  aria-label={`Exercise ${i + 1}`}
+                  value={name}
+                  placeholder="Exercise name"
+                  onChange={(e) =>
+                    onChange({
+                      exercises: exercises.map((x, j) =>
+                        j === i ? e.target.value : x,
+                      ),
+                    })
+                  }
+                />
+                <button
+                  type="button"
+                  className="btn btn-danger btn-xs"
+                  aria-label={`Remove exercise ${i + 1}`}
+                  onClick={() =>
+                    onChange({ exercises: exercises.filter((_, j) => j !== i) })
+                  }
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+            <div className="flex gap-2" style={{ flexWrap: "wrap" }}>
+              {exercises.length < 6 && (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-xs"
+                  onClick={() => onChange({ exercises: [...exercises, ""] })}
+                >
+                  + Add exercise
+                </button>
+              )}
+              {hasNumbered && (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-xs"
+                  onClick={fromDescription}
+                >
+                  Use the numbered lines above
+                </button>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+      <p className="muted small mt-2">{describeFields(block)}</p>
+      {hasResults && (
+        <p className="small mt-2" style={{ color: "#ff9c9c" }}>
+          Results are already logged for this block. Changing the setup won't
+          delete them, but they'll show as "earlier setup".
+        </p>
+      )}
+    </div>
+  );
+}
+
+// Member side: the input fields for one block (per exercise and/or a row per set, as the coach asked for)
+function ResultInputs({ block, getValue, setValue, idPrefix }) {
+  const sets = blockSets(block);
+  const per = perSetVarsOf(block);
+  const singles = singleVarsOf(block);
+  const groups = exerciseGroups(block);
+  const setNos = setNumbers(block);
+  const id = (k) => `${idPrefix}_${k.replace(/\W+/g, "_")}`;
+  const cols = `${sets > 1 ? "46px " : ""}repeat(${per.length}, minmax(0, 1fr))`;
+  const headStyle = {
+    fontSize: "0.7rem",
+    fontWeight: 700,
+    textTransform: "uppercase",
+    letterSpacing: "0.06em",
+  };
+  return (
+    <>
+      {per.length > 0 &&
+        groups.map((g) => (
+          <div key={g.no} style={{ marginBottom: "16px" }}>
+            {g.name && (
+              <div
+                style={{
+                  fontWeight: 700,
+                  fontSize: "0.92rem",
+                  marginBottom: "8px",
+                }}
+              >
+                {g.name}
+              </div>
+            )}
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: cols,
+                gap: "8px",
+                marginBottom: "6px",
+              }}
+            >
+              {sets > 1 && <span />}
+              {per.map((v) => (
+                <span key={v} className="muted" style={headStyle}>
+                  {v}
+                </span>
+              ))}
+            </div>
+            {setNos.map((sn) => (
+              <div
+                key={sn}
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: cols,
+                  gap: "8px",
+                  alignItems: "center",
+                  marginBottom: "8px",
+                }}
+              >
+                {sets > 1 && (
+                  <span className="muted small" style={{ fontWeight: 700 }}>
+                    Set {sn}
+                  </span>
+                )}
+                {per.map((v) => {
+                  const k = entryKey(v, sn, g.no);
+                  return (
+                    <input
+                      key={v}
+                      id={id(k)}
+                      style={{ padding: "8px" }}
+                      value={getValue(k)}
+                      placeholder={SET_SHORT[v]}
+                      aria-label={`${g.name ? g.name + ", " : ""}${v}${sn ? `, set ${sn}` : ""}`}
+                      onChange={(e) => setValue(k, e.target.value)}
+                    />
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+        ))}
+      {singles.length > 0 && (
+        <div className="grid-2">
+          {singles.map((v) => (
+            <div key={v}>
+              <label htmlFor={id(v)}>{v}</label>
+              <input
+                id={id(v)}
+                value={getValue(v)}
+                onChange={(e) => setValue(v, e.target.value)}
+                placeholder={`Enter ${v.toLowerCase()}`}
+              />
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+// Read-only table of everyone's results for one block
+function ResultsTable({
+  block,
+  members,
+  getVal,
+  getAll,
+  highlight,
+  emptyColor,
+}) {
+  const cols = resultColumns(block);
+  const orphanText = (m) =>
+    orphanEntries(block, getAll ? getAll(m) : null)
+      .map(([k, v]) => `${k}: ${v}`)
+      .join(" · ");
+  const showOrphans = members.some((m) => orphanText(m));
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <table className="results-table">
+        <thead>
+          <tr>
+            <th>Member</th>
+            {cols.map((c, i) => (
+              <th key={i}>{c.label}</th>
+            ))}
+            {showOrphans && <th>Earlier setup</th>}
+          </tr>
+        </thead>
+        <tbody>
+          {members.map((m) => {
+            const get = (k) => getVal(m, k);
+            return (
+              <tr key={m}>
+                <td
+                  style={{
+                    fontWeight: 600,
+                    fontSize: "0.87rem",
+                    color: m === highlight ? "#FF6B1A" : undefined,
+                  }}
+                >
+                  {m}
+                  {m === highlight ? " ★" : ""}
+                </td>
+                {cols.map((c, i) => {
+                  const t = c.cell(get);
+                  return (
+                    <td
+                      key={i}
+                      style={{
+                        color: t ? undefined : emptyColor,
+                        whiteSpace: "pre-line",
+                      }}
+                    >
+                      {t || "—"}
+                    </td>
+                  );
+                })}
+                {showOrphans && (
+                  <td
+                    style={{
+                      whiteSpace: "pre-line",
+                      fontSize: "0.8rem",
+                      color: "#c8bfb0",
+                    }}
+                  >
+                    {orphanText(m) || "—"}
+                  </td>
+                )}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 // ─── Class results: one document per session ──────────────────────────────────
 // classResults/{sessionId} = { results: { "<block>|<member>": { "<variable>": "value" } },
 //                              saved:   { "<block>|<member>": true }, updatedAt }
@@ -393,6 +894,9 @@ function useClassResults(wodId) {
     get: (block, member, variable) =>
       data.results[entry(block, member)]?.[variable] || "",
     isSaved: (block, member) => !!data.saved[entry(block, member)],
+    getAll: (block, member) => data.results[entry(block, member)] || {},
+    anyForBlock: (block) =>
+      Object.keys(data.results).some((k) => k.startsWith(`${block}|`)),
     // one field (used by the admin results table)
     setField: (block, member, variable, value) =>
       setDoc(
@@ -2162,45 +2666,40 @@ function ClientPlan({ client, profile, authUser, coachName, onBack }) {
   const orgId = profile.orgId;
   const [workouts, setWorkouts] = useState([]);
   const [loadErr, setLoadErr] = useState("");
-  const [tick, setTick] = useState(0);
   const [weekStart, setWeekStart] = useState(getMondayOfWeek(today));
   const [editing, setEditing] = useState(null);
   const [saving, setSaving] = useState(false);
   const [formErr, setFormErr] = useState("");
   const [confirmDel, setConfirmDel] = useState(false);
+  const [savedNote, setSavedNote] = useState("");
 
+  // Live: the coach sees a client's results the moment they are logged, and setup changes show up at once
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const base = [
-          where("orgId", "==", orgId),
-          where("clientId", "==", client.id),
-        ];
-        const q =
-          profile.role === "coach"
-            ? query(
-                collection(db, "clientWorkouts"),
-                ...base,
-                where("coachId", "==", authUser.uid),
-              )
-            : query(collection(db, "clientWorkouts"), ...base);
-        const snap = await getDocs(q);
-        if (!cancelled) {
-          setWorkouts(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-          setLoadErr("");
-        }
-      } catch {
-        if (!cancelled)
-          setLoadErr(
-            "Could not load this client's sessions. Check your connection and the Firestore rules.",
-          );
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [client.id, orgId, profile.role, authUser.uid, tick]);
+    const base = [
+      where("orgId", "==", orgId),
+      where("clientId", "==", client.id),
+    ];
+    const q =
+      profile.role === "coach"
+        ? query(
+            collection(db, "clientWorkouts"),
+            ...base,
+            where("coachId", "==", authUser.uid),
+          )
+        : query(collection(db, "clientWorkouts"), ...base);
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        setWorkouts(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+        setLoadErr("");
+      },
+      () =>
+        setLoadErr(
+          "Could not load this client's sessions. Check your connection and the Firestore rules.",
+        ),
+    );
+    return unsub;
+  }, [client.id, orgId, profile.role, authUser.uid]);
 
   const byDate = {};
   workouts.forEach((w) => {
@@ -2265,18 +2764,6 @@ function ClientPlan({ client, profile, authUser, coachName, onBack }) {
       ...p,
       blocks: p.blocks.map((b, j) => (j === i ? { ...b, ...patch } : b)),
     }));
-  const toggleVar = (i, v) =>
-    setEditing((p) => ({
-      ...p,
-      blocks: p.blocks.map((b, j) => {
-        if (j !== i) return b;
-        const cur = b.variables || [];
-        return {
-          ...b,
-          variables: cur.includes(v) ? cur.filter((x) => x !== v) : [...cur, v],
-        };
-      }),
-    }));
   const addBlock = () =>
     setEditing((p) => {
       const next = ["A", "B", "C", "D"].find(
@@ -2323,6 +2810,8 @@ function ClientPlan({ client, profile, authUser, coachName, onBack }) {
       name: b.name,
       description: b.description.trim(),
       variables: b.variables || [],
+      sets: blockSets(b),
+      exercises: exercisesOf(b),
     }));
     const base = {
       date: editing.date,
@@ -2348,7 +2837,8 @@ function ClientPlan({ client, profile, authUser, coachName, onBack }) {
       }
       setWeekStart(getMondayOfWeek(base.date));
       setEditing(null);
-      setTick((t) => t + 1);
+      setSavedNote("Session saved. The client sees it straight away.");
+      setTimeout(() => setSavedNote(""), 5000);
     } catch {
       setFormErr(
         "Could not save. Check your permissions and connection, then try again.",
@@ -2365,11 +2855,21 @@ function ClientPlan({ client, profile, authUser, coachName, onBack }) {
     try {
       await deleteDoc(doc(db, "clientWorkouts", editing.id));
       setEditing(null);
-      setTick((t) => t + 1);
     } catch {
       setFormErr("Could not delete the session.");
     }
   };
+
+  // what each block asks the client to log, e.g. "B: 3 exercises × 5 sets"
+  const setupSummary = (w) =>
+    (w.blocks || [])
+      .filter((b) => isDetailed(b) && perSetVarsOf(b).length)
+      .map((b) => {
+        const n = exercisesOf(b).length,
+          st = blockSets(b);
+        return `${b.name}: ${[n ? `${n} exercise${n !== 1 ? "s" : ""}` : "", st > 1 ? `${st} sets` : ""].filter(Boolean).join(" × ")}`;
+      })
+      .join(" · ");
 
   const sessionRow = (w) => (
     <div
@@ -2388,6 +2888,11 @@ function ClientPlan({ client, profile, authUser, coachName, onBack }) {
           >
             {w.title || "Session"}
           </span>
+          {setupSummary(w) && (
+            <div className="muted small" style={{ marginTop: "4px" }}>
+              Logging: {setupSummary(w)}
+            </div>
+          )}
         </div>
         <span className="muted small">
           {(w.blocks || []).length} block
@@ -2420,6 +2925,11 @@ function ClientPlan({ client, profile, authUser, coachName, onBack }) {
         >
           {loadErr}
         </div>
+      )}
+      {savedNote && (
+        <p className="small mb-3" style={{ color: "#7dde7d" }}>
+          {savedNote}
+        </p>
       )}
 
       <div className="flex-between mb-3">
@@ -2730,12 +3240,7 @@ function ClientPlan({ client, profile, authUser, coachName, onBack }) {
                         key={name}
                         type="button"
                         className="btn btn-ghost btn-xs"
-                        onClick={() =>
-                          setBlock(idx, {
-                            description: BLOCK_TEMPLATES[name].description,
-                            variables: BLOCK_TEMPLATES[name].variables,
-                          })
-                        }
+                        onClick={() => setBlock(idx, templatePatch(name))}
                       >
                         {name}
                       </button>
@@ -2749,25 +3254,19 @@ function ClientPlan({ client, profile, authUser, coachName, onBack }) {
                     placeholder="Block description…"
                     style={{ marginBottom: "8px" }}
                   />
-                  <div className="flex flex-wrap gap-2">
-                    {RESULT_VARS.map((v) => (
-                      <label key={v} className="check-var">
-                        <input
-                          type="checkbox"
-                          checked={(block.variables || []).includes(v)}
-                          onChange={() => toggleVar(idx, v)}
-                        />
-                        {v}
-                      </label>
-                    ))}
-                  </div>
+                  <ResultFieldsEditor
+                    block={block}
+                    onChange={(patch) => setBlock(idx, patch)}
+                    hasResults={!!editing.results?.[block.name]}
+                  />
                   {editing.results?.[block.name] && (
                     <div className="small mt-2" style={{ color: "#7dde7d" }}>
                       Client's result:{" "}
-                      {Object.entries(editing.results[block.name])
-                        .filter(([, v]) => v)
-                        .map(([k, v]) => `${k}: ${v}`)
-                        .join(" · ") || "—"}
+                      {describeResults(
+                        block,
+                        (k) => editing.results[block.name][k],
+                        editing.results[block.name],
+                      ) || "—"}
                     </div>
                   )}
                 </div>
@@ -2801,24 +3300,17 @@ function MyPlanView({ profile, authUser, org }) {
   const blockRefs = useRef([]);
   const jumped = useRef(false);
 
+  // Live: if the coach changes the session (for example which fields to log), it updates here at once
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const snap = await getDocs(
-          query(collection(db, "clientWorkouts"), where("clientId", "==", uid)),
-        );
-        if (!cancelled) {
-          setWorkouts(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-          setStatus("ready");
-        }
-      } catch {
-        if (!cancelled) setStatus("error");
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+    const unsub = onSnapshot(
+      query(collection(db, "clientWorkouts"), where("clientId", "==", uid)),
+      (snap) => {
+        setWorkouts(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+        setStatus("ready");
+      },
+      () => setStatus("error"),
+    );
+    return unsub;
   }, [uid]);
 
   const created = (w) => (w.createdAt?.toMillis ? w.createdAt.toMillis() : 0);
@@ -2886,9 +3378,9 @@ function MyPlanView({ profile, authUser, org }) {
     const key = `${wod.id}_${block.name}`;
     const draft = draftFor(wod, block);
     const vals = {};
-    (block.variables || []).forEach((v) => {
-      const t = String(draft[v] ?? "").trim();
-      if (t) vals[v] = t.slice(0, 200);
+    fieldKeys(block).forEach((k) => {
+      const t = String(draft[k] ?? "").trim();
+      if (t) vals[k] = t.slice(0, 200);
     });
     setSavingKey(key);
     setSaveErr("");
@@ -2898,17 +3390,6 @@ function MyPlanView({ profile, authUser, org }) {
         [`doneBlocks.${block.name}`]: true,
         updatedAt: serverTimestamp(),
       });
-      setWorkouts((prev) =>
-        prev.map((w) =>
-          w.id === wod.id
-            ? {
-                ...w,
-                results: { ...(w.results || {}), [block.name]: vals },
-                doneBlocks: { ...(w.doneBlocks || {}), [block.name]: true },
-              }
-            : w,
-        ),
-      );
       const next = bi + 1;
       if (next < wod.blocks.length) {
         setOpenBlockIdx(next);
@@ -3158,7 +3639,6 @@ function MyPlanView({ profile, authUser, org }) {
             const saved = isSaved(wod, block);
             const open = openBlockIdx === bi;
             const draft = draftFor(wod, block);
-            const vars = block.variables || [];
             const last = bi === wod.blocks.length - 1;
             return (
               <div
@@ -3243,26 +3723,18 @@ function MyPlanView({ profile, authUser, org }) {
                         padding: "16px",
                       }}
                     >
-                      {vars.length > 0 && (
-                        <div className="grid-2">
-                          {vars.map((v) => {
-                            const id = `${key}_${v.replace(/\W+/g, "_")}`;
-                            return (
-                              <div key={v}>
-                                <label htmlFor={id}>{v}</label>
-                                <input
-                                  id={id}
-                                  value={draft[v] ?? ""}
-                                  onChange={(e) =>
-                                    setDraft(wod, block, v, e.target.value)
-                                  }
-                                  placeholder={`Enter ${v.toLowerCase()}`}
-                                />
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
+                      <p
+                        className="muted small"
+                        style={{ marginBottom: "12px" }}
+                      >
+                        {describeFields(block).replace("Members log:", "Log:")}
+                      </p>
+                      <ResultInputs
+                        block={block}
+                        idPrefix={key}
+                        getValue={(k) => draft[k] ?? ""}
+                        setValue={(k, val) => setDraft(wod, block, k, val)}
+                      />
                       {saveErr && (
                         <div
                           style={{
@@ -3691,13 +4163,6 @@ function WodEditor({
       ...p,
       blocks: p.blocks.map((b, j) => (j === i ? { ...b, ...u } : b)),
     }));
-  const toggleVar = (bi, v) => {
-    const b = local.blocks[bi],
-      c = b.variables || [];
-    updateBlock(bi, {
-      variables: c.includes(v) ? c.filter((x) => x !== v) : [...c, v],
-    });
-  };
   const toggleMember = (name) => {
     const cur = getSessionMembers(wod.id);
     if (cur.includes(name)) {
@@ -3768,7 +4233,9 @@ function WodEditor({
           {isEditing && (
             <button
               className="btn btn-primary btn-sm"
-              onClick={() => onSave(local)}
+              onClick={() =>
+                onSave({ ...local, blocks: local.blocks.map(cleanBlock) })
+              }
             >
               Save
             </button>
@@ -3829,12 +4296,7 @@ function WodEditor({
                     key={name}
                     type="button"
                     className="btn btn-ghost btn-xs"
-                    onClick={() =>
-                      updateBlock(idx, {
-                        description: BLOCK_TEMPLATES[name].description,
-                        variables: BLOCK_TEMPLATES[name].variables,
-                      })
-                    }
+                    onClick={() => updateBlock(idx, templatePatch(name))}
                   >
                     {name}
                   </button>
@@ -3850,18 +4312,11 @@ function WodEditor({
               />
               <div>
                 <label>Result Variables</label>
-                <div className="flex flex-wrap gap-2">
-                  {RESULT_VARS.map((v) => (
-                    <label key={v} className="check-var">
-                      <input
-                        type="checkbox"
-                        checked={(block.variables || []).includes(v)}
-                        onChange={() => toggleVar(idx, v)}
-                      />
-                      {v}
-                    </label>
-                  ))}
-                </div>
+                <ResultFieldsEditor
+                  block={block}
+                  onChange={(patch) => updateBlock(idx, patch)}
+                  hasResults={cr.anyForBlock(block.name)}
+                />
               </div>
             </div>
           ))}
@@ -3927,8 +4382,8 @@ function WodEditor({
                           <thead>
                             <tr>
                               <th>Member</th>
-                              {(block.variables || []).map((v) => (
-                                <th key={v}>{v}</th>
+                              {fieldList(block).map((f) => (
+                                <th key={f.key}>{f.label}</th>
                               ))}
                             </tr>
                           </thead>
@@ -3943,7 +4398,7 @@ function WodEditor({
                                 >
                                   {member}
                                 </td>
-                                {(block.variables || []).map((v) => (
+                                {fieldKeys(block).map((v) => (
                                   <td key={v}>
                                     <input
                                       key={cr.get(block.name, member, v)}
@@ -4302,8 +4757,9 @@ function PlannerAdmin({
   };
   const saveWod = () => {
     const exists = period.workouts.some((w) => w.id === editWod.id);
-    if (exists) updateWorkout(period.id, editWod);
-    else addWorkout(period.id, editWod);
+    const cleaned = { ...editWod, blocks: editWod.blocks.map(cleanBlock) };
+    if (exists) updateWorkout(period.id, cleaned);
+    else addWorkout(period.id, cleaned);
     setSelDate(null);
     setEditWod(null);
   };
@@ -4754,13 +5210,7 @@ function PlannerAdmin({
                                 ...p,
                                 blocks: p.blocks.map((b, i) =>
                                   i === idx
-                                    ? {
-                                        ...b,
-                                        description:
-                                          BLOCK_TEMPLATES[name].description,
-                                        variables:
-                                          BLOCK_TEMPLATES[name].variables,
-                                      }
+                                    ? { ...b, ...templatePatch(name) }
                                     : b,
                                 ),
                               }))
@@ -4785,34 +5235,17 @@ function PlannerAdmin({
                         placeholder="Block description…"
                         style={{ marginBottom: "8px" }}
                       />
-                      <div className="flex flex-wrap gap-2">
-                        {RESULT_VARS.map((v) => (
-                          <label key={v} className="check-var">
-                            <input
-                              type="checkbox"
-                              checked={(block.variables || []).includes(v)}
-                              onChange={() =>
-                                setEditWod((p) => ({
-                                  ...p,
-                                  blocks: p.blocks.map((b, i) =>
-                                    i === idx
-                                      ? {
-                                          ...b,
-                                          variables: (
-                                            b.variables || []
-                                          ).includes(v)
-                                            ? b.variables.filter((x) => x !== v)
-                                            : [...(b.variables || []), v],
-                                        }
-                                      : b,
-                                  ),
-                                }))
-                              }
-                            />
-                            {v}
-                          </label>
-                        ))}
-                      </div>
+                      <ResultFieldsEditor
+                        block={block}
+                        onChange={(patch) =>
+                          setEditWod((p) => ({
+                            ...p,
+                            blocks: p.blocks.map((b, i) =>
+                              i === idx ? { ...b, ...patch } : b,
+                            ),
+                          }))
+                        }
+                      />
                     </div>
                   ))}
                   {editWod.blocks.length < 4 && (
@@ -5060,44 +5493,13 @@ function HistoryAdmin({ periods, getSessionMembers }) {
                     {mems.length === 0 ? (
                       <p className="muted small">No participants recorded.</p>
                     ) : (
-                      <div style={{ overflowX: "auto" }}>
-                        <table className="results-table">
-                          <thead>
-                            <tr>
-                              <th>Member</th>
-                              {(block.variables || []).map((v) => (
-                                <th key={v}>{v}</th>
-                              ))}
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {mems.map((m) => (
-                              <tr key={m}>
-                                <td
-                                  style={{
-                                    fontWeight: 600,
-                                    fontSize: "0.87rem",
-                                  }}
-                                >
-                                  {m}
-                                </td>
-                                {(block.variables || []).map((v) => (
-                                  <td
-                                    key={v}
-                                    style={{
-                                      color: cr.get(block.name, m, v)
-                                        ? undefined
-                                        : "#555",
-                                    }}
-                                  >
-                                    {cr.get(block.name, m, v) || "—"}
-                                  </td>
-                                ))}
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
+                      <ResultsTable
+                        block={block}
+                        members={mems}
+                        emptyColor="#555"
+                        getVal={(m, k) => cr.get(block.name, m, k)}
+                        getAll={(m) => cr.getAll(block.name, m)}
+                      />
                     )}
                   </div>
                 );
@@ -5211,8 +5613,8 @@ function MemberView({ allWorkouts, periods, getSessionMembers, memberRoster }) {
   const handleBlockDone = (bi) => {
     const block = wod.blocks[bi];
     const vals = {};
-    (block.variables || []).forEach((v) => {
-      vals[v] = String(valueFor(block, v) ?? "")
+    fieldKeys(block).forEach((k) => {
+      vals[k] = String(valueFor(block, k) ?? "")
         .trim()
         .slice(0, 200);
     });
@@ -5586,26 +5988,29 @@ function MemberView({ allWorkouts, periods, getSessionMembers, memberRoster }) {
                           padding: "16px",
                         }}
                       >
-                        <div className="grid-2">
-                          {(block.variables || []).map((v) => (
-                            <div key={v}>
-                              <label>{v}</label>
-                              <input
-                                value={valueFor(block, v)}
-                                onChange={(e) =>
-                                  setDrafts((p) => ({
-                                    ...p,
-                                    [block.name]: {
-                                      ...(p[block.name] || {}),
-                                      [v]: e.target.value,
-                                    },
-                                  }))
-                                }
-                                placeholder={`Enter ${v.toLowerCase()}`}
-                              />
-                            </div>
-                          ))}
-                        </div>
+                        <p
+                          className="muted small"
+                          style={{ marginBottom: "12px" }}
+                        >
+                          {describeFields(block).replace(
+                            "Members log:",
+                            "Log:",
+                          )}
+                        </p>
+                        <ResultInputs
+                          block={block}
+                          idPrefix={`home_${wod.id}_${block.name}`}
+                          getValue={(k) => valueFor(block, k)}
+                          setValue={(k, val) =>
+                            setDrafts((p) => ({
+                              ...p,
+                              [block.name]: {
+                                ...(p[block.name] || {}),
+                                [k]: val,
+                              },
+                            }))
+                          }
+                        />
                         {saveErr && (
                           <div
                             style={{
@@ -5720,45 +6125,15 @@ function MemberView({ allWorkouts, periods, getSessionMembers, memberRoster }) {
                   </span>
                 </div>
                 {open && (
-                  <div style={{ overflowX: "auto", marginTop: "12px" }}>
-                    <table className="results-table">
-                      <thead>
-                        <tr>
-                          <th>Member</th>
-                          {(block.variables || []).map((v) => (
-                            <th key={v}>{v}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {sessionMems.map((m) => (
-                          <tr key={m}>
-                            <td
-                              style={{
-                                fontWeight: 600,
-                                fontSize: "0.87rem",
-                                color: m === memberName ? "#FF6B1A" : undefined,
-                              }}
-                            >
-                              {m}
-                              {m === memberName ? " ★" : ""}
-                            </td>
-                            {(block.variables || []).map((v) => (
-                              <td
-                                key={v}
-                                style={{
-                                  color: cr.get(block.name, m, v)
-                                    ? undefined
-                                    : "#444",
-                                }}
-                              >
-                                {cr.get(block.name, m, v) || "—"}
-                              </td>
-                            ))}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                  <div style={{ marginTop: "12px" }}>
+                    <ResultsTable
+                      block={block}
+                      members={sessionMems}
+                      highlight={memberName}
+                      emptyColor="#444"
+                      getVal={(m, k) => cr.get(block.name, m, k)}
+                      getAll={(m) => cr.getAll(block.name, m)}
+                    />
                   </div>
                 )}
               </div>
