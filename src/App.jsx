@@ -363,6 +363,23 @@ const makeCode = () => {
   return Array.from(bytes, (b) => chars[b % chars.length]).join("");
 };
 const prettyCode = (c) => (c.match(/.{1,5}/g) || []).join("-");
+const looksLikeEmail = (e) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
+// Opens the coach's own mail app with the invitation already written (sent from their address)
+const inviteMailto = ({
+  email,
+  firstName,
+  orgName,
+  inviterName,
+  role,
+  link,
+}) => {
+  const subject = `Din inbjudan till ${orgName}`;
+  const body =
+    `Hej ${firstName || ""}!\n\n${inviterName} har bjudit in dig till ${orgName} som ${role === "member" ? "klient" : "coach"}.\n\n` +
+    `Skapa ditt konto här (länken gäller i 7 dagar och kan bara användas en gång):\n${link}\n\n` +
+    `Du väljer ett eget lösenord när du registrerar dig. Använd samma e-postadress som det här mejlet skickades till.\n\nVälkommen!\n${inviterName}`;
+  return `mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+};
 
 // ─── Detailed result fields ────────────────────────────────────────────────────
 // Some fields are asked once per block ("Rounds", "Comment"). Weight, reps, time and distance
@@ -1690,6 +1707,7 @@ function RegisterView({
         else {
           setInvite({ code: c, ...d });
           setName(d.inviteeName || "");
+          setEmail(d.inviteeEmail || "");
         }
       }
     } catch {
@@ -1887,7 +1905,14 @@ function RegisterView({
           onChange={(e) => setEmail(e.target.value)}
           autoComplete="email"
           placeholder="you@example.com"
+          readOnly={!!invite.inviteeEmail}
+          style={invite.inviteeEmail ? { opacity: 0.75 } : undefined}
         />
+        {invite.inviteeEmail && (
+          <p className="muted small mt-1">
+            This invite was sent to this address.
+          </p>
+        )}
       </div>
       <div className="mt-3">
         <label htmlFor="reg-pass">Choose a password</label>
@@ -1939,7 +1964,9 @@ function ClientsView({ profile, authUser, org }) {
   const [loadErr, setLoadErr] = useState("");
   const [tick, setTick] = useState(0);
   const [role, setRole] = useState("member");
-  const [inviteeName, setInviteeName] = useState("");
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [inviteeEmail, setInviteeEmail] = useState("");
   const [coachId, setCoachId] = useState(uid);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
@@ -2027,6 +2054,35 @@ function ClientsView({ profile, authUser, org }) {
 
   const createInvite = async () => {
     setMsg("");
+    const fn = firstName.trim(),
+      ln = lastName.trim(),
+      em = inviteeEmail.trim().toLowerCase();
+    if (!fn || !ln) {
+      setMsg("Enter the person's first and last name.");
+      return;
+    }
+    if (!looksLikeEmail(em)) {
+      setMsg("Enter a valid email address.");
+      return;
+    }
+    if (people.some((p) => (p.email || "").toLowerCase() === em)) {
+      setMsg("Someone with that email already has an account.");
+      return;
+    }
+    if (
+      invites.some(
+        (i) =>
+          !i.used &&
+          (i.inviteeEmail || "").toLowerCase() === em &&
+          i.expiresAt?.toMillis &&
+          i.expiresAt.toMillis() > Date.now(),
+      )
+    ) {
+      setMsg(
+        "There is already a pending invite for that email. Use its Email or Copy link button below.",
+      );
+      return;
+    }
     setBusy(true);
     try {
       const code = makeCode();
@@ -2040,17 +2096,24 @@ function ClientsView({ profile, authUser, org }) {
         createdAt: serverTimestamp(),
         expiresAt: Timestamp.fromMillis(Date.now() + 7 * 86400000),
         used: false,
+        inviteeFirstName: fn,
+        inviteeLastName: ln,
+        inviteeName: `${fn} ${ln}`,
+        inviteeEmail: em,
       };
       if (inviteRole === "member")
         data.coachId = myRole === "coach" ? uid : coachId;
-      if (inviteeName.trim()) data.inviteeName = inviteeName.trim();
       await setDoc(doc(db, "invites", code), data);
       setCreated({
         code,
         role: inviteRole,
-        inviteeName: data.inviteeName || "",
+        name: data.inviteeName,
+        firstName: fn,
+        email: em,
       });
-      setInviteeName("");
+      setFirstName("");
+      setLastName("");
+      setInviteeEmail("");
       setTick((t) => t + 1);
     } catch {
       setMsg(
@@ -2059,6 +2122,17 @@ function ClientsView({ profile, authUser, org }) {
     }
     setBusy(false);
   };
+
+  // the "Email the link" button for an invite (opens the mail app, addressed and written)
+  const mailtoFor = (inv, code) =>
+    inviteMailto({
+      email: inv.email ?? inv.inviteeEmail,
+      firstName: inv.firstName ?? inv.inviteeFirstName,
+      orgName: org?.name || orgId,
+      inviterName: profile.name || authUser.email,
+      role: inv.role,
+      link: linkFor(code),
+    });
 
   const revoke = async (code) => {
     try {
@@ -2257,12 +2331,32 @@ function ClientsView({ profile, authUser, org }) {
                 )}
               </div>
               <div>
-                <label htmlFor="inv-name">Name (optional)</label>
+                <label htmlFor="inv-first">First name</label>
                 <input
-                  id="inv-name"
-                  value={inviteeName}
-                  onChange={(e) => setInviteeName(e.target.value)}
-                  placeholder="Who is this for?"
+                  id="inv-first"
+                  value={firstName}
+                  onChange={(e) => setFirstName(e.target.value)}
+                  autoComplete="off"
+                />
+              </div>
+              <div>
+                <label htmlFor="inv-last">Last name</label>
+                <input
+                  id="inv-last"
+                  value={lastName}
+                  onChange={(e) => setLastName(e.target.value)}
+                  autoComplete="off"
+                />
+              </div>
+              <div>
+                <label htmlFor="inv-email">Email</label>
+                <input
+                  id="inv-email"
+                  type="email"
+                  value={inviteeEmail}
+                  onChange={(e) => setInviteeEmail(e.target.value)}
+                  placeholder="name@example.com"
+                  autoComplete="off"
                 />
               </div>
               {myRole === "admin" && role === "member" && (
@@ -2296,7 +2390,8 @@ function ClientsView({ profile, authUser, org }) {
                 {busy ? "Creating…" : "Create invite"}
               </button>
               <span className="muted small">
-                Invites are valid for 7 days and can be used once.
+                The invite only works for this email address, is valid for 7
+                days and can be used once.
               </span>
             </div>
 
@@ -2309,9 +2404,8 @@ function ClientsView({ profile, authUser, org }) {
                   className="small"
                   style={{ color: "#c8bfb0", marginBottom: "6px" }}
                 >
-                  Invite for a <strong>{roleLabel(created.role)}</strong>
-                  {created.inviteeName ? ` (${created.inviteeName})` : ""} —
-                  share this link:
+                  Invite created for <strong>{created.name}</strong> (
+                  {created.email}), as a {roleLabel(created.role)}.
                 </div>
                 <div
                   style={{
@@ -2327,6 +2421,12 @@ function ClientsView({ profile, authUser, org }) {
                   className="flex gap-2"
                   style={{ alignItems: "center", flexWrap: "wrap" }}
                 >
+                  <a
+                    className="btn btn-primary btn-sm"
+                    href={mailtoFor(created, created.code)}
+                  >
+                    ✉ Email the link
+                  </a>
                   <button
                     className="btn btn-ghost btn-sm"
                     onClick={() => copy(linkFor(created.code))}
@@ -2388,13 +2488,22 @@ function ClientsView({ profile, authUser, org }) {
                     {i.inviteeName || "Unnamed invite"}
                   </span>
                   <div className="muted small mt-1">
-                    Expires {fmt(i.expiresAt)}
+                    {i.inviteeEmail ? `${i.inviteeEmail} · ` : ""}Expires{" "}
+                    {fmt(i.expiresAt)}
                     {i.role === "member" && i.coachId
                       ? ` · coach: ${nameOf(i.coachId)}`
                       : ""}
                   </div>
                 </div>
                 <div className="flex gap-2">
+                  {i.inviteeEmail && (
+                    <a
+                      className="btn btn-ghost btn-xs"
+                      href={mailtoFor(i, i.id)}
+                    >
+                      ✉ Email
+                    </a>
+                  )}
                   <button
                     className="btn btn-ghost btn-xs"
                     onClick={() => copy(linkFor(i.id))}
