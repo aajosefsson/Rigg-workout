@@ -704,13 +704,23 @@ function ResultInputs({ block, getValue, setValue, idPrefix }) {
   const groups = exerciseGroups(block);
   const setNos = setNumbers(block);
   const id = (k) => `${idPrefix}_${k.replace(/\W+/g, "_")}`;
-  const cols = `${sets > 1 ? "46px " : ""}repeat(${per.length}, minmax(0, 1fr))`;
+  const cols = `${sets > 1 ? "46px " : ""}repeat(${per.length}, minmax(0, 1fr))${sets > 1 ? " auto" : ""}`;
   const headStyle = {
     fontSize: "0.7rem",
     fontWeight: 700,
     textTransform: "uppercase",
     letterSpacing: "0.06em",
   };
+  // number keypad on phones for the one-value-per-box fields (time needs ":" so it keeps the normal keyboard)
+  const keypad = {
+    "Weight (kg)": "decimal",
+    "Distance (m)": "decimal",
+    Reps: "numeric",
+  };
+  const copyPrev = (exNo, sn) =>
+    per.forEach((v) =>
+      setValue(entryKey(v, sn, exNo), getValue(entryKey(v, sn - 1, exNo))),
+    );
   return (
     <>
       {per.length > 0 &&
@@ -741,6 +751,7 @@ function ResultInputs({ block, getValue, setValue, idPrefix }) {
                   {v}
                 </span>
               ))}
+              {sets > 1 && <span />}
             </div>
             {setNos.map((sn) => (
               <div
@@ -767,11 +778,28 @@ function ResultInputs({ block, getValue, setValue, idPrefix }) {
                       style={{ padding: "8px" }}
                       value={getValue(k)}
                       placeholder={SET_SHORT[v]}
+                      inputMode={keypad[v]}
+                      autoComplete="off"
                       aria-label={`${g.name ? g.name + ", " : ""}${v}${sn ? `, set ${sn}` : ""}`}
                       onChange={(e) => setValue(k, e.target.value)}
                     />
                   );
                 })}
+                {sets > 1 &&
+                  (sn > 1 ? (
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-xs"
+                      style={{ padding: "6px 8px", whiteSpace: "nowrap" }}
+                      title={`Same as set ${sn - 1}`}
+                      aria-label={`Copy set ${sn - 1} to set ${sn}${g.name ? ` for ${g.name}` : ""}`}
+                      onClick={() => copyPrev(g.no, sn)}
+                    >
+                      ↑ same
+                    </button>
+                  ) : (
+                    <span />
+                  ))}
               </div>
             ))}
           </div>
@@ -803,6 +831,7 @@ function ResultsTable({
   getAll,
   highlight,
   emptyColor,
+  unlisted = [],
 }) {
   const cols = resultColumns(block);
   const orphanText = (m) =>
@@ -836,6 +865,15 @@ function ResultsTable({
                 >
                   {m}
                   {m === highlight ? " ★" : ""}
+                  {unlisted.includes(m) && (
+                    <span
+                      className="muted"
+                      style={{ fontWeight: 400, fontSize: "0.72rem" }}
+                    >
+                      {" "}
+                      · not on the list
+                    </span>
+                  )}
                 </td>
                 {cols.map((c, i) => {
                   const t = c.cell(get);
@@ -912,6 +950,17 @@ function useClassResults(wodId) {
       data.results[entry(block, member)]?.[variable] || "",
     isSaved: (block, member) => !!data.saved[entry(block, member)],
     getAll: (block, member) => data.results[entry(block, member)] || {},
+    // everyone who has logged anything for this session, whether or not they are on the participant list
+    entryMembers: () => {
+      const names = new Set();
+      [...Object.keys(data.results), ...Object.keys(data.saved)].forEach(
+        (k) => {
+          const i = k.indexOf("|");
+          if (i > 0) names.add(k.slice(i + 1));
+        },
+      );
+      return [...names].sort((a, b) => a.localeCompare(b, "sv"));
+    },
     anyForBlock: (block) =>
       Object.keys(data.results).some((k) => k.startsWith(`${block}|`)),
     // one field (used by the admin results table)
@@ -4246,6 +4295,10 @@ function WodEditor({
   const cr = useClassResults(wod.id);
   const [local, setLocal] = useState(wod);
   const members = getSessionMembers(wod.id);
+  const resultMembers = [
+    ...members,
+    ...cr.entryMembers().filter((m) => !members.includes(m)),
+  ];
   useEffect(() => setLocal(wod), [wod]);
   const [expandedBlocks, setExpandedBlocks] = useState({});
   const [confirmDel, setConfirmDel] = useState(false);
@@ -4476,7 +4529,7 @@ function WodEditor({
                 >
                   {block.description}
                 </pre>
-                {members.length > 0 && (
+                {resultMembers.length > 0 && (
                   <div className="mt-2">
                     <button
                       type="button"
@@ -4497,7 +4550,7 @@ function WodEditor({
                             </tr>
                           </thead>
                           <tbody>
-                            {members.map((member) => (
+                            {resultMembers.map((member) => (
                               <tr key={member}>
                                 <td
                                   style={{
@@ -4506,6 +4559,18 @@ function WodEditor({
                                   }}
                                 >
                                   {member}
+                                  {!members.includes(member) && (
+                                    <span
+                                      className="muted"
+                                      style={{
+                                        fontWeight: 400,
+                                        fontSize: "0.72rem",
+                                      }}
+                                    >
+                                      {" "}
+                                      · not on the list
+                                    </span>
+                                  )}
                                 </td>
                                 {fieldKeys(block).map((v) => (
                                   <td key={v}>
@@ -5579,7 +5644,11 @@ function HistoryAdmin({ periods, getSessionMembers }) {
                 {formatDate(wod.date)}
               </p>
               {wod.blocks.map((block, bi) => {
-                const mems = getSessionMembers(wod.id);
+                const listed = getSessionMembers(wod.id);
+                const mems = [
+                  ...listed,
+                  ...cr.entryMembers().filter((m) => !listed.includes(m)),
+                ];
                 return (
                   <div key={bi} className="card mb-3">
                     <div className="flex-center gap-2 mb-2">
@@ -5605,6 +5674,7 @@ function HistoryAdmin({ periods, getSessionMembers }) {
                       <ResultsTable
                         block={block}
                         members={mems}
+                        unlisted={mems.filter((m) => !listed.includes(m))}
                         emptyColor="#555"
                         getVal={(m, k) => cr.get(block.name, m, k)}
                         getAll={(m) => cr.getAll(block.name, m)}
@@ -5690,6 +5760,12 @@ function MemberView({ allWorkouts, periods, getSessionMembers, memberRoster }) {
   }, [wod?.id, memberName]);
   const valueFor = (block, v) =>
     drafts[block.name]?.[v] ?? cr.get(block.name, memberName, v);
+  // Anyone who logs a result is shown on the session, even if they weren't ticked as a participant
+  const resultMems = [
+    ...sessionMems,
+    ...cr.entryMembers().filter((m) => !sessionMems.includes(m)),
+  ];
+  const unlistedMems = resultMems.filter((m) => !sessionMems.includes(m));
   const isBlockSaved = (block) =>
     !!(wod && memberName && cr.isSaved(block.name, memberName));
   const allBlocksSaved =
@@ -6188,7 +6264,7 @@ function MemberView({ allWorkouts, periods, getSessionMembers, memberRoster }) {
       )}
 
       {/* Class results table */}
-      {wod && sessionMems.length > 0 && (
+      {wod && resultMems.length > 0 && (
         <div className="mb-6">
           <div className="section-header mb-3">
             <h4
@@ -6237,7 +6313,8 @@ function MemberView({ allWorkouts, periods, getSessionMembers, memberRoster }) {
                   <div style={{ marginTop: "12px" }}>
                     <ResultsTable
                       block={block}
-                      members={sessionMems}
+                      members={resultMems}
+                      unlisted={unlistedMems}
                       highlight={memberName}
                       emptyColor="#444"
                       getVal={(m, k) => cr.get(block.name, m, k)}
