@@ -1,0 +1,254 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+    function signedIn() { return request.auth != null; }
+    function userDoc(id) { return get(/databases/$(database)/documents/users/$(id)); }
+    function me() { return userDoc(request.auth.uid).data; }
+    function myOrg() { return me().orgId; }
+    function isActive() { return me().get('active', true) == true; }
+    function isAdmin() { return signedIn() && isActive() && me().role == 'admin'; }
+    function isCoach() { return signedIn() && isActive() && me().role == 'coach'; }
+
+    // ── Shared class data ─────────────────────────────────────────────────────
+    // Everyone may READ (Home is public). Planning data - periods, sessions,
+    // participants and the member roster - can only be WRITTEN by a signed-in admin.
+    // The three planning documents are public to read (Home needs them) and admin-only to write.
+    // The old results blobs ('cf_results', 'cf_saved_results') are now a read-only backup that
+    // only an admin can even read, and 'cf_migration' is the admin's one-time migration marker.
+    match /riggworkout/{docId} {
+      allow read: if docId in ['cf_periods', 'cf_session_members', 'cf_member_roster'] || isAdmin();
+      allow write: if docId in ['cf_periods', 'cf_session_members', 'cf_member_roster', 'cf_migration'] && isAdmin();
+    }
+
+    // ── Class results: one document per session ───────────────────────────────
+    // Group members log results on Home without an account, so anyone may write here,
+    // but only in small steps: a single write may touch at most ONE member's entry
+    // (so nobody can wipe a whole session in one go), and only these three fields.
+    // Admins may write in bulk (used for the one-time move of the old results) and delete.
+    function validClassResults(d) {
+      return d.keys().hasOnly(['results', 'saved', 'updatedAt'])
+        && d.get('results', {}) is map
+        && d.get('saved', {}) is map
+        && d.updatedAt == request.time;
+    }
+
+    match /classResults/{wid} {
+      allow read: if true;
+      allow create: if validClassResults(request.resource.data)
+        && (isAdmin()
+            || (request.resource.data.get('results', {}).keys().size() <= 1
+                && request.resource.data.get('saved', {}).keys().size() <= 1));
+      allow update: if validClassResults(request.resource.data)
+        && (isAdmin()
+            || (request.resource.data.get('results', {}).diff(resource.data.get('results', {})).affectedKeys().size() <= 1
+                && request.resource.data.get('saved', {}).diff(resource.data.get('saved', {})).affectedKeys().size() <= 1));
+      allow delete: if isAdmin();
+    }
+
+    // ── Organizations: members can read their own organization ────────────────
+    match /orgs/{orgId} {
+      allow read: if signedIn() && myOrg() == orgId;
+      allow write: if false;
+    }
+
+    // ── Admin helpers (step 4) ────────────────────────────────────────────────
+    // A coach id is valid when it belongs to an ACTIVE coach/admin of my organization.
+    function validCoachId(id) {
+      let c = userDoc(id).data;
+      return c.orgId == myOrg() && c.role in ['coach', 'admin'] && c.get('active', true) == true;
+    }
+
+    // Used when an admin moves a client's sessions to a new coach (only 'coachId' changes).
+    function adminCanReassign(w, newCoach) {
+      let m = me();
+      let c = userDoc(newCoach).data;
+      return m.role == 'admin' && m.get('active', true) == true && w.orgId == m.orgId
+        && c.orgId == m.orgId && c.role in ['coach', 'admin'] && c.get('active', true) == true;
+    }
+
+    // ── Users ─────────────────────────────────────────────────────────────────
+    // A new account may create ITS OWN profile, but only through a valid, unused
+    // invite that is marked as used in the very same batch.
+    function registrationOk(uid, d) {
+      let invitePath = /databases/$(database)/documents/invites/$(d.inviteCode);
+      let inv = get(invitePath).data;
+      return d.keys().hasOnly(['role', 'orgId', 'name', 'email', 'active', 'coachId', 'createdBy', 'inviteCode', 'createdAt'])
+        && d.keys().hasAll(['role', 'orgId', 'name', 'email', 'active', 'createdBy', 'inviteCode', 'createdAt'])
+        && d.role in ['coach', 'member']
+        && d.active == true
+        && d.email == request.auth.token.email
+        && d.name is string && d.name.size() > 0 && d.name.size() <= 80
+        && d.createdAt == request.time
+        && inv.used == false
+        && inv.expiresAt > request.time
+        && inv.role == d.role
+        && inv.orgId == d.orgId
+        && inv.createdBy == d.createdBy
+        && inv.get('coachId', '') == d.get('coachId', '')
+        && (inv.get('inviteeEmail', '') == '' || inv.inviteeEmail == d.email)
+        && (d.role != 'member' || get(/databases/$(database)/documents/users/$(d.coachId)).data.get('active', true) == true)
+        && getAfter(invitePath).data.used == true
+        && getAfter(invitePath).data.usedBy == uid;
+    }
+
+    match /users/{uid} {
+      allow read: if signedIn() && (
+        request.auth.uid == uid
+        || (isAdmin() && resource.data.orgId == myOrg())
+        || (isCoach() && resource.data.orgId == myOrg() && resource.data.coachId == request.auth.uid)
+      );
+      allow create: if signedIn() && request.auth.uid == uid && registrationOk(uid, request.resource.data);
+      // Admins can (de)activate coaches and clients and move a client to another coach.
+      // Nothing else on a profile can change, and admins cannot deactivate themselves.
+      allow update: if isAdmin()
+        && resource.data.orgId == myOrg()
+        && resource.data.role in ['coach', 'member']
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['active', 'coachId', 'statusChangedAt', 'statusChangedBy'])
+        && request.resource.data.get('active', true) is bool
+        && request.resource.data.statusChangedAt == request.time
+        && request.resource.data.statusChangedBy == request.auth.uid
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['coachId'])
+            || (resource.data.role == 'member' && validCoachId(request.resource.data.coachId)));
+      allow delete: if false;
+    }
+
+    // ── Invites ───────────────────────────────────────────────────────────────
+    // Admins may invite coaches and clients. Coaches may only invite clients, and
+    // those clients are always assigned to the inviting coach.
+    function canCreateInvite(d) {
+      return signedIn() && isActive()
+        && d.keys().hasOnly(['orgId', 'orgName', 'role', 'coachId', 'createdBy', 'createdByName', 'inviteeName', 'inviteeFirstName', 'inviteeLastName', 'inviteeEmail', 'createdAt', 'expiresAt', 'used'])
+        && d.keys().hasAll(['orgId', 'orgName', 'role', 'createdBy', 'createdByName', 'createdAt', 'expiresAt', 'used'])
+        && d.used == false
+        && d.createdBy == request.auth.uid
+        && d.createdAt == request.time
+        && d.orgId == myOrg()
+        && d.expiresAt > request.time
+        && d.expiresAt <= request.time + duration.value(30, 'd')
+        && d.orgName is string && d.orgName.size() <= 80
+        && d.createdByName is string && d.createdByName.size() <= 80
+        && (!('inviteeName' in d) || (d.inviteeName is string && d.inviteeName.size() <= 160))
+        && (!('inviteeFirstName' in d) || (d.inviteeFirstName is string && d.inviteeFirstName.size() <= 80))
+        && (!('inviteeLastName' in d) || (d.inviteeLastName is string && d.inviteeLastName.size() <= 80))
+        && (!('inviteeEmail' in d) || (d.inviteeEmail is string && d.inviteeEmail.size() <= 120 && d.inviteeEmail.matches('.+@.+')))
+        && (
+          (me().role == 'admin' && d.role in ['coach', 'member'])
+          || (me().role == 'coach' && d.role == 'member' && d.get('coachId', '') == request.auth.uid)
+        )
+        && (d.role != 'member' || (
+          userDoc(d.coachId).data.orgId == myOrg()
+          && userDoc(d.coachId).data.role in ['coach', 'admin']
+        ));
+    }
+
+    match /invites/{code} {
+      // Looking up ONE invite by its (unguessable) code is allowed for anyone,
+      // because the invited person isn't signed in yet. Listing is not.
+      allow get: if true;
+      allow list: if signedIn() && (
+        (isAdmin() && resource.data.orgId == myOrg())
+        || (isCoach() && resource.data.orgId == myOrg() && resource.data.createdBy == request.auth.uid)
+      );
+      allow create: if canCreateInvite(request.resource.data);
+      // Marking an invite as used: only the new account itself, only false -> true,
+      // and only together with its own profile that references this exact code.
+      allow update: if signedIn()
+        && resource.data.used == false
+        && request.resource.data.used == true
+        && request.resource.data.usedBy == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['used', 'usedBy', 'usedAt'])
+        && existsAfter(/databases/$(database)/documents/users/$(request.auth.uid))
+        && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.inviteCode == code;
+      allow delete: if signedIn() && resource.data.used == false
+        && ((isAdmin() && resource.data.orgId == myOrg()) || resource.data.createdBy == request.auth.uid);
+    }
+
+    // ── Private client sessions ───────────────────────────────────────────────
+    // Readable by the client, the client's own coach, and admins of the organization.
+    // Only that coach (or an admin) may create/edit/delete the plan itself. The client
+    // may only touch 'results' and 'doneBlocks' (used when step 5 is built).
+    function workoutShape(d) {
+      return d.keys().hasOnly(['orgId', 'clientId', 'coachId', 'date', 'title', 'blocks', 'createdBy', 'createdAt', 'updatedAt', 'results', 'doneBlocks'])
+        && d.keys().hasAll(['orgId', 'clientId', 'coachId', 'date', 'title', 'blocks', 'createdBy', 'createdAt', 'updatedAt'])
+        && d.date is string && d.date.size() == 10
+        && d.title is string && d.title.size() <= 120
+        && d.blocks is list && d.blocks.size() <= 6;
+    }
+
+    function isStaffOf(w) {
+      return isActive() && w.orgId == myOrg() && (
+        isAdmin() || (isCoach() && w.coachId == request.auth.uid)
+      );
+    }
+
+    match /clientWorkouts/{wid} {
+      allow read: if signedIn() && (
+        (resource.data.clientId == request.auth.uid && isActive())
+        || (isAdmin() && resource.data.orgId == myOrg())
+        || (isCoach() && resource.data.orgId == myOrg() && resource.data.coachId == request.auth.uid)
+      );
+
+      allow create: if signedIn() && isActive()
+        && (isAdmin() || isCoach())
+        && workoutShape(request.resource.data)
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.orgId == myOrg()
+        && userDoc(request.resource.data.clientId).data.orgId == myOrg()
+        && userDoc(request.resource.data.clientId).data.role == 'member'
+        && request.resource.data.coachId == userDoc(request.resource.data.clientId).data.coachId
+        && (isAdmin() || request.resource.data.coachId == request.auth.uid);
+
+      allow update: if signedIn() && (
+        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['coachId', 'updatedAt'])
+          && request.resource.data.updatedAt == request.time
+          && adminCanReassign(resource.data, request.resource.data.coachId))
+        || (isStaffOf(resource.data)
+          && workoutShape(request.resource.data)
+          && request.resource.data.orgId == resource.data.orgId
+          && request.resource.data.clientId == resource.data.clientId
+          && request.resource.data.coachId == resource.data.coachId
+          && request.resource.data.createdBy == resource.data.createdBy
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.updatedAt == request.time)
+        || (resource.data.clientId == request.auth.uid
+          && isActive()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['results', 'doneBlocks', 'updatedAt'])
+          && request.resource.data.updatedAt == request.time)
+      );
+
+      allow delete: if signedIn() && isStaffOf(resource.data);
+    }
+
+    // ── Templates: a shared library of sessions for the staff of an organization ──
+    // Admins and coaches can read and add templates. A template can be deleted by whoever
+    // created it, or by an admin. Templates are never edited, only added and removed.
+    function templateShape(d) {
+      return d.keys().hasOnly(['orgId', 'name', 'title', 'blocks', 'createdBy', 'createdByName', 'createdAt'])
+        && d.keys().hasAll(['orgId', 'name', 'title', 'blocks', 'createdBy', 'createdByName', 'createdAt'])
+        && d.name is string && d.name.size() > 0 && d.name.size() <= 80
+        && d.title is string && d.title.size() <= 120
+        && d.createdByName is string && d.createdByName.size() <= 80
+        && d.blocks is list && d.blocks.size() <= 6;
+    }
+
+    match /templates/{tid} {
+      allow read: if (isAdmin() || isCoach()) && resource.data.orgId == myOrg();
+      allow create: if (isAdmin() || isCoach())
+        && templateShape(request.resource.data)
+        && request.resource.data.orgId == myOrg()
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.createdAt == request.time;
+      allow update: if false;
+      allow delete: if (isAdmin() || isCoach()) && resource.data.orgId == myOrg()
+        && (isAdmin() || resource.data.createdBy == request.auth.uid);
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
