@@ -1302,6 +1302,7 @@ export default function App() {
   // Planning is saved ONLY after an admin has changed it: the edit actions below mark their
   // document as dirty, and this effect writes the dirty ones. Loading data, signing in or a
   // role change never marks anything dirty, so they never trigger a write.
+  // Never call setPeriods/setSessionMembers/setMemberRoster directly for admin edits; use the edit* helpers.
   const dirty = useRef({
     cf_periods: false,
     cf_session_members: false,
@@ -1655,7 +1656,7 @@ export default function App() {
               setSessionMembersForWod={setSessionMembersForWod}
               getSessionMembers={getSessionMembers}
               memberRoster={memberRoster}
-              setMemberRoster={editMemberRoster}
+              editMemberRoster={editMemberRoster}
               orgId={profile.orgId}
             />
           ))}
@@ -4219,7 +4220,7 @@ function AdminView({
   setSessionMembersForWod,
   getSessionMembers,
   memberRoster,
-  setMemberRoster,
+  editMemberRoster,
   orgId,
 }) {
   const [tab, setTab] = useState("today");
@@ -4418,7 +4419,7 @@ function AdminView({
       {tab === "members" && (
         <MembersAdmin
           memberRoster={memberRoster}
-          setMemberRoster={setMemberRoster}
+          editMemberRoster={editMemberRoster}
         />
       )}
       {tab === "history" && (
@@ -4905,7 +4906,7 @@ function WodEditor({
 }
 
 // ─── MEMBERS ADMIN ─────────────────────────────────────────────────────────────
-function MembersAdmin({ memberRoster, setMemberRoster }) {
+function MembersAdmin({ memberRoster, editMemberRoster }) {
   const [newName, setNewName] = useState("");
   const [confirmDel, setConfirmDel] = useState(null);
   const [editingName, setEditingName] = useState(null);
@@ -4916,13 +4917,13 @@ function MembersAdmin({ memberRoster, setMemberRoster }) {
   const addMember = () => {
     const n = newName.trim();
     if (!n || memberRoster.includes(n) || memberRoster.length >= 30) return;
-    setMemberRoster([...memberRoster, n]);
+    editMemberRoster([...memberRoster, n]);
     setNewName("");
   };
 
   const deleteMember = (name) => {
     if (confirmDel === name) {
-      setMemberRoster(memberRoster.filter((n) => n !== name));
+      editMemberRoster(memberRoster.filter((n) => n !== name));
       setConfirmDel(null);
     } else {
       setConfirmDel(name);
@@ -4949,7 +4950,7 @@ function MembersAdmin({ memberRoster, setMemberRoster }) {
   };
   const applyRename = () => {
     const { from, to } = confirmRename;
-    setMemberRoster(memberRoster.map((n) => (n === from ? to : n)));
+    editMemberRoster(memberRoster.map((n) => (n === from ? to : n)));
     setConfirmRename(null);
   };
 
