@@ -24,19 +24,14 @@ import {
   sendPasswordResetEmail,
 } from "firebase/auth";
 
-const load = async (key, fallback = null) => {
-  try {
-    const snap = await getDoc(doc(db, "riggworkout", key));
-    return snap.exists() ? snap.data().value : fallback;
-  } catch {
-    return fallback;
-  }
+// Returns the stored value, or undefined when the document doesn't exist.
+// A failed read THROWS, so it can never be mistaken for "no data yet".
+const load = async (key) => {
+  const snap = await getDoc(doc(db, "riggworkout", key));
+  return snap.exists() ? snap.data().value : undefined;
 };
-const save = async (key, val) => {
-  try {
-    await setDoc(doc(db, "riggworkout", key), { value: val });
-  } catch {}
-};
+// Rejects when the write fails; the caller decides how to show it
+const save = (key, val) => setDoc(doc(db, "riggworkout", key), { value: val });
 
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const MONTHS = [
@@ -1242,37 +1237,74 @@ export default function App() {
     } catch {}
     setView("member");
   };
-  const [periods, setPeriods] = useState([DEMO_PERIOD]);
+  const [periods, setPeriods] = useState([]);
   const [activePeriodId, setActivePeriodId] = useState(DEMO_PERIOD.id);
   const [sessionMembers, setSessionMembers] = useState({});
-  const [memberRoster, setMemberRoster] = useState(DEFAULT_MEMBERS);
-  const [loaded, setLoaded] = useState(false);
+  const [memberRoster, setMemberRoster] = useState([]);
+  const [planningStatus, setPlanningStatus] = useState("loading"); // loading | ready | error
+  const loaded = planningStatus === "ready";
+  const [saveFailed, setSaveFailed] = useState(false);
   const isAdminUser =
     role === "admin" && !(profile && profile.active === false);
   const [migration, setMigration] = useState(null); // {status: "running" | "done" | "error", count}
 
   useEffect(() => {
     (async () => {
-      const p = await load("cf_periods");
-      const sm = await load("cf_session_members");
-      const mr = await load("cf_member_roster");
-      if (p) setPeriods(p);
-      if (sm) setSessionMembers(sm);
-      if (mr) setMemberRoster(mr);
-      setLoaded(true);
+      try {
+        // Dev-only test hook: ?simulateLoadFailure=1 makes the planning read fail (stripped from production builds)
+        if (
+          import.meta.env.DEV &&
+          new URLSearchParams(window.location.search).get(
+            "simulateLoadFailure",
+          ) === "1"
+        )
+          throw new Error("Simulated planning load failure (dev only)");
+        const [p, sm, mr] = await Promise.all([
+          load("cf_periods"),
+          load("cf_session_members"),
+          load("cf_member_roster"),
+        ]);
+        // Demo data only when the document really doesn't exist yet (first run)
+        setPeriods(p ?? [DEMO_PERIOD]);
+        setSessionMembers(sm ?? {});
+        setMemberRoster(mr ?? DEFAULT_MEMBERS);
+        setPlanningStatus("ready");
+      } catch (err) {
+        console.error("Could not load the planning:", err);
+        setPlanningStatus("error");
+      }
     })();
   }, []);
 
-  // Planning data is only ever written by a signed-in admin (visitors never overwrite it)
+  // Planning is saved ONLY after an admin has changed it: the edit actions below mark their
+  // document as dirty, and this effect writes the dirty ones. Loading data, signing in or a
+  // role change never marks anything dirty, so they never trigger a write.
+  const dirty = useRef({
+    cf_periods: false,
+    cf_session_members: false,
+    cf_member_roster: false,
+  });
+  const markDirty = (key) => {
+    dirty.current[key] = true;
+  };
+  const canSave = loaded && isAdminUser && !saveFailed;
   useEffect(() => {
-    if (loaded && isAdminUser) save("cf_periods", periods);
-  }, [periods, loaded, isAdminUser]);
-  useEffect(() => {
-    if (loaded && isAdminUser) save("cf_session_members", sessionMembers);
-  }, [sessionMembers, loaded, isAdminUser]);
-  useEffect(() => {
-    if (loaded && isAdminUser) save("cf_member_roster", memberRoster);
-  }, [memberRoster, loaded, isAdminUser]);
+    const current = {
+      cf_periods: periods,
+      cf_session_members: sessionMembers,
+      cf_member_roster: memberRoster,
+    };
+    Object.entries(current).forEach(([key, value]) => {
+      if (!dirty.current[key]) return;
+      dirty.current[key] = false;
+      if (!canSave) return;
+      // No silent retry: after a failed write all saving stops and the admin is told to reload
+      save(key, value).catch((err) => {
+        console.error(`Could not save ${key}:`, err);
+        setSaveFailed(true);
+      });
+    });
+  }, [periods, sessionMembers, memberRoster, canSave]);
 
   // One-time move of the old results blobs into per-session documents (runs for an admin only)
   useEffect(() => {
@@ -1307,17 +1339,28 @@ export default function App() {
     periods.find((p) => p.id === activePeriodId) || periods[0];
   const allWorkouts = periods.flatMap((p) => p.workouts);
 
-  const setSessionMembersForWod = (wodId, mems) =>
+  // Every admin edit goes through these; each marks the document it changes as dirty
+  const editPeriods = (fn) => {
+    markDirty("cf_periods");
+    setPeriods(fn);
+  };
+  const editMemberRoster = (roster) => {
+    markDirty("cf_member_roster");
+    setMemberRoster(roster);
+  };
+  const setSessionMembersForWod = (wodId, mems) => {
+    markDirty("cf_session_members");
     setSessionMembers((prev) => ({ ...prev, [wodId]: mems }));
+  };
   const getSessionMembers = (wodId) => sessionMembers[wodId] || [];
 
   const updatePeriod = (id, updates) =>
-    setPeriods((prev) =>
+    editPeriods((prev) =>
       prev.map((p) => (p.id === id ? { ...p, ...updates } : p)),
     );
   const addPeriod = () => {
     const np = EMPTY_PERIOD();
-    setPeriods((prev) => [...prev, np]);
+    editPeriods((prev) => [...prev, np]);
     setActivePeriodId(np.id);
   };
   const dropClassResults = (wodId) => {
@@ -1327,7 +1370,7 @@ export default function App() {
     (periods.find((p) => p.id === id)?.workouts || []).forEach((w) =>
       dropClassResults(w.id),
     );
-    setPeriods((prev) => {
+    editPeriods((prev) => {
       const next = prev.filter((p) => p.id !== id);
       return next.length ? next : [EMPTY_PERIOD()];
     });
@@ -1337,13 +1380,13 @@ export default function App() {
     });
   };
   const addWorkout = (periodId, wod) =>
-    setPeriods((prev) =>
+    editPeriods((prev) =>
       prev.map((p) =>
         p.id === periodId ? { ...p, workouts: [...p.workouts, wod] } : p,
       ),
     );
   const updateWorkout = (periodId, wod) =>
-    setPeriods((prev) =>
+    editPeriods((prev) =>
       prev.map((p) =>
         p.id === periodId
           ? {
@@ -1355,7 +1398,7 @@ export default function App() {
     );
   const deleteWorkout = (periodId, wodId) => {
     dropClassResults(wodId);
-    setPeriods((prev) =>
+    editPeriods((prev) =>
       prev.map((p) =>
         p.id === periodId
           ? { ...p, workouts: p.workouts.filter((w) => w.id !== wodId) }
@@ -1364,7 +1407,7 @@ export default function App() {
     );
   };
 
-  if (!loaded || !authReady)
+  if (planningStatus === "loading" || !authReady)
     return (
       <div
         style={{
@@ -1488,13 +1531,35 @@ export default function App() {
           </div>
         )}
 
-        {current === "member" && (
-          <MemberView
-            allWorkouts={allWorkouts}
-            periods={periods}
-            getSessionMembers={getSessionMembers}
-            memberRoster={memberRoster}
-          />
+        {current === "member" &&
+          (planningStatus === "error" ? (
+            <ErrorBanner>
+              Could not load the workouts. Check your connection and reload the
+              page.
+            </ErrorBanner>
+          ) : (
+            <MemberView
+              allWorkouts={allWorkouts}
+              periods={periods}
+              getSessionMembers={getSessionMembers}
+              memberRoster={memberRoster}
+            />
+          ))}
+        {current === "classes" && role === "admin" && (
+          <>
+            {planningStatus === "error" && (
+              <ErrorBanner>
+                Could not load the planning. Editing is paused so nothing gets
+                overwritten. Reload the page.
+              </ErrorBanner>
+            )}
+            {saveFailed && (
+              <ErrorBanner>
+                Your last change could not be saved. Reload before editing
+                more.
+              </ErrorBanner>
+            )}
+          </>
         )}
         {current === "loading" && (
           <div
@@ -1537,7 +1602,9 @@ export default function App() {
           <DeactivatedNotice email={authUser?.email} onLogout={logout} />
         )}
         {current === "classes" &&
-          (role === "admin" ? (
+          (role !== "admin" ? (
+            noAccess
+          ) : planningStatus === "error" ? null : (
             <AdminView
               periods={periods}
               activePeriod={activePeriod}
@@ -1553,11 +1620,9 @@ export default function App() {
               setSessionMembersForWod={setSessionMembersForWod}
               getSessionMembers={getSessionMembers}
               memberRoster={memberRoster}
-              setMemberRoster={setMemberRoster}
+              setMemberRoster={editMemberRoster}
               orgId={profile.orgId}
             />
-          ) : (
-            noAccess
           ))}
         {current === "clients" &&
           (role === "admin" || role === "coach" ? (
@@ -1776,6 +1841,36 @@ function SectionTitle({ children }) {
         {children}
       </h4>
       <div className="section-line" />
+    </div>
+  );
+}
+
+// Red banner at the top of a page (planning couldn't be loaded or saved)
+function ErrorBanner({ children }) {
+  return (
+    <div
+      className="page"
+      role="alert"
+      style={{
+        position: "relative",
+        zIndex: 1,
+        paddingTop: "12px",
+        paddingBottom: 0,
+        maxWidth: "900px",
+      }}
+    >
+      <div
+        className="card"
+        style={{
+          padding: "10px 16px",
+          fontSize: "0.85rem",
+          color: "#ff7070",
+          borderColor: "rgba(220,50,50,0.35)",
+          background: "rgba(220,50,50,0.08)",
+        }}
+      >
+        {children}
+      </div>
     </div>
   );
 }
