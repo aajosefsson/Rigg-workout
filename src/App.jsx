@@ -909,6 +909,640 @@ function ResultsTable({
   );
 }
 
+// ─── Progress over time ───────────────────────────────────────────────────────
+// Progress is built from results logged PER EXERCISE (a block's "Log each exercise separately" list),
+// because the exercise name is what ties one session to the next.
+const parseNum = (v) => {
+  const n = parseFloat(String(v ?? "").replace(",", "."));
+  return Number.isFinite(n) ? n : null;
+};
+const normName = (n) =>
+  String(n || "")
+    .trim()
+    .toLowerCase();
+const round1 = (n) => Math.round(n * 10) / 10;
+const shortDate = (d) => {
+  const x = new Date(d + "T12:00:00");
+  return `${x.getDate()} ${MONTHS[x.getMonth()].slice(0, 3)}`;
+};
+const fmtSet = (st) =>
+  st.w !== null && st.r !== null
+    ? `${st.w} × ${st.r}`
+    : st.w !== null
+      ? `${st.w} kg`
+      : `${st.r} reps`;
+
+// For one block and one person's results: [{ name, sets: [{ w, r }] }], one entry per named exercise
+const exerciseEntries = (block, get) => {
+  const per = perSetVarsOf(block),
+    exs = exercisesOf(block);
+  const hasW = per.includes("Weight (kg)"),
+    hasR = per.includes("Reps");
+  if (!exs.length || (!hasW && !hasR)) return [];
+  return exs
+    .map((name, i) => {
+      const sets = [];
+      setNumbers(block).forEach((sn) => {
+        const w = hasW
+          ? parseNum(get(entryKey("Weight (kg)", sn, i + 1)))
+          : null;
+        const r = hasR ? parseNum(get(entryKey("Reps", sn, i + 1))) : null;
+        if (w !== null || r !== null) sets.push({ w, r });
+      });
+      return { name, sets };
+    })
+    .filter((e) => e.sets.length);
+};
+
+// A client's own sessions -> progress entries
+const entriesFromWorkouts = (workouts) =>
+  workouts.flatMap((w) =>
+    (w.blocks || []).flatMap((b) => {
+      const res = w.results?.[b.name];
+      if (!res) return [];
+      return exerciseEntries(b, (k) => res[k]).map((e) => ({
+        ...e,
+        date: w.date,
+        session: w.title || "Session",
+      }));
+    }),
+  );
+
+const METRICS = {
+  top: {
+    label: "Top weight",
+    unit: "kg",
+    calc: (sets) => {
+      const v = sets.filter((s) => s.w !== null).map((s) => s.w);
+      return v.length ? Math.max(...v) : null;
+    },
+  },
+  e1rm: {
+    label: "Estimated 1RM",
+    unit: "kg",
+    calc: (sets) => {
+      const v = sets
+        .filter((s) => s.w !== null && s.r !== null && s.r >= 1)
+        .map((s) => (s.r === 1 ? s.w : s.w * (1 + s.r / 30)));
+      return v.length ? round1(Math.max(...v)) : null;
+    },
+  },
+  volume: {
+    label: "Volume (weight × reps)",
+    unit: "kg",
+    calc: (sets) => {
+      const v = sets.filter((s) => s.w !== null && s.r !== null);
+      return v.length ? round1(v.reduce((a, s) => a + s.w * s.r, 0)) : null;
+    },
+  },
+  topReps: {
+    label: "Top reps",
+    unit: "reps",
+    calc: (sets) => {
+      const v = sets.filter((s) => s.r !== null).map((s) => s.r);
+      return v.length ? Math.max(...v) : null;
+    },
+  },
+  reps: {
+    label: "Total reps",
+    unit: "reps",
+    calc: (sets) => {
+      const v = sets.filter((s) => s.r !== null);
+      return v.length ? v.reduce((a, s) => a + s.r, 0) : null;
+    },
+  },
+};
+
+function LineChart({ points, unit }) {
+  const W = 640,
+    H = 230,
+    padL = 46,
+    padR = 18,
+    padT = 18,
+    padB = 36;
+  const vals = points.map((p) => p.value);
+  let lo = Math.min(...vals),
+    hi = Math.max(...vals);
+  if (lo === hi) {
+    lo -= 1;
+    hi += 1;
+  }
+  const margin = (hi - lo) * 0.15;
+  lo = Math.max(0, lo - margin);
+  hi += margin;
+  const n = points.length;
+  const x = (i) =>
+    n === 1
+      ? (padL + (W - padR)) / 2
+      : padL + (i * (W - padL - padR)) / (n - 1);
+  const y = (v) => padT + (1 - (v - lo) / (hi - lo)) * (H - padT - padB);
+  const ticks = [0, 1, 2, 3].map((t) => lo + ((hi - lo) * t) / 3);
+  const every = Math.ceil(n / 6);
+  return (
+    <svg
+      viewBox={`0 0 ${W} ${H}`}
+      style={{ width: "100%", height: "auto", display: "block" }}
+      role="img"
+      aria-label={`Progress chart in ${unit}`}
+    >
+      {ticks.map((t, i) => (
+        <g key={i}>
+          <line
+            x1={padL}
+            x2={W - padR}
+            y1={y(t)}
+            y2={y(t)}
+            stroke="rgba(255,255,255,0.08)"
+          />
+          <text
+            x={padL - 8}
+            y={y(t) + 4}
+            textAnchor="end"
+            fontSize="11"
+            fill="#8a7a6a"
+          >
+            {round1(t)}
+          </text>
+        </g>
+      ))}
+      {n > 1 && (
+        <polyline
+          fill="none"
+          stroke="#FF6B1A"
+          strokeWidth="2.5"
+          strokeLinejoin="round"
+          points={points.map((p, i) => `${x(i)},${y(p.value)}`).join(" ")}
+        />
+      )}
+      {points.map((p, i) => (
+        <g key={i}>
+          <circle
+            cx={x(i)}
+            cy={y(p.value)}
+            r="4.5"
+            fill="#FF6B1A"
+            stroke="#1a0f07"
+            strokeWidth="2"
+          >
+            <title>{`${shortDate(p.date)}: ${p.value} ${unit}`}</title>
+          </circle>
+          {(i === 0 || i === n - 1 || n <= 8) && (
+            <text
+              x={x(i)}
+              y={y(p.value) - 10}
+              textAnchor="middle"
+              fontSize="11"
+              fill="#f0ebe3"
+            >
+              {p.value}
+            </text>
+          )}
+          {(i % every === 0 || i === n - 1) && (
+            <text
+              x={x(i)}
+              y={H - 12}
+              textAnchor="middle"
+              fontSize="11"
+              fill="#8a7a6a"
+            >
+              {shortDate(p.date)}
+            </text>
+          )}
+        </g>
+      ))}
+    </svg>
+  );
+}
+
+// entries: [{ date, name, sets, session }] from any source (a client's sessions or a class member's results)
+function ProgressPanel({ entries }) {
+  const [sel, setSel] = useState("");
+  const [metricSel, setMetricSel] = useState("");
+  const groups = {};
+  entries.forEach((e) => {
+    const k = normName(e.name);
+    (groups[k] = groups[k] || []).push(e);
+  });
+  const list = Object.entries(groups)
+    .map(([key, items]) => {
+      const sorted = [...items].sort((a, b) => a.date.localeCompare(b.date));
+      return { key, name: sorted[sorted.length - 1].name, items: sorted };
+    })
+    .sort(
+      (a, b) =>
+        b.items.length - a.items.length || a.name.localeCompare(b.name, "sv"),
+    );
+
+  if (!list.length) {
+    return (
+      <p className="muted small">
+        No progress to show yet. It's built from results logged per exercise, so
+        each exercise needs a name in the block setup ("Log each exercise
+        separately") and results with weight or reps.
+      </p>
+    );
+  }
+  const g = list.find((x) => x.key === sel) || list[0];
+  const available = Object.keys(METRICS).filter((k) =>
+    g.items.some((it) => METRICS[k].calc(it.sets) !== null),
+  );
+  const metric = available.includes(metricSel) ? metricSel : available[0];
+  const M = METRICS[metric];
+  const pts = g.items
+    .map((it) => ({
+      date: it.date,
+      session: it.session,
+      sets: it.sets,
+      value: M.calc(it.sets),
+    }))
+    .filter((pt) => pt.value !== null);
+  const vals = pts.map((pt) => pt.value);
+  const first = vals[0],
+    last = vals[vals.length - 1],
+    best = Math.max(...vals);
+  const diff = round1(last - first);
+  const pct = first ? Math.round(((last - first) / first) * 100) : null;
+
+  return (
+    <div>
+      <div className="grid-2 mb-3">
+        <div>
+          <label htmlFor="prog-ex">Exercise</label>
+          <select
+            id="prog-ex"
+            value={g.key}
+            onChange={(e) => setSel(e.target.value)}
+          >
+            {list.map((x) => (
+              <option key={x.key} value={x.key}>
+                {x.name} ({x.items.length})
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label htmlFor="prog-metric">Show</label>
+          <select
+            id="prog-metric"
+            value={metric}
+            onChange={(e) => setMetricSel(e.target.value)}
+          >
+            {available.map((k) => (
+              <option key={k} value={k}>
+                {METRICS[k].label}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <div className="flex gap-3 mb-3" style={{ flexWrap: "wrap" }}>
+        <span className="small">
+          <span className="muted">First</span>{" "}
+          <strong>
+            {first} {M.unit}
+          </strong>
+        </span>
+        <span className="small">
+          <span className="muted">Latest</span>{" "}
+          <strong>
+            {last} {M.unit}
+          </strong>
+        </span>
+        <span className="small">
+          <span className="muted">Best</span>{" "}
+          <strong>
+            {best} {M.unit}
+          </strong>
+        </span>
+        {pts.length > 1 && (
+          <span
+            className="small"
+            style={{ color: diff >= 0 ? "#7dde7d" : "#ff9c9c" }}
+          >
+            <strong>
+              {diff > 0 ? "+" : ""}
+              {diff} {M.unit}
+              {pct !== null ? ` (${pct > 0 ? "+" : ""}${pct}%)` : ""}
+            </strong>
+          </span>
+        )}
+      </div>
+
+      <LineChart points={pts} unit={M.unit} />
+      {pts.length === 1 && (
+        <p className="muted small mt-2">
+          Only one session logged so far. A trend appears after the next one.
+        </p>
+      )}
+
+      <div style={{ overflowX: "auto", marginTop: "14px" }}>
+        <table className="results-table">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Session</th>
+              <th>Sets</th>
+              <th>{M.label}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {[...pts].reverse().map((pt, i) => (
+              <tr key={i}>
+                <td>{shortDate(pt.date)}</td>
+                <td>{pt.session}</td>
+                <td>{pt.sets.map(fmtSet).join(" · ")}</td>
+                <td style={{ fontWeight: 600 }}>
+                  {pt.value} {M.unit}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// Progress for a member of the group classes: collects their results from every session
+function ClassProgress({ member, allWorkouts }) {
+  const [docs, setDocs] = useState(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const snap = await getDocs(collection(db, "classResults"));
+        const map = {};
+        snap.docs.forEach((d) => {
+          map[d.id] = d.data();
+        });
+        if (!cancelled) setDocs(map);
+      } catch {
+        if (!cancelled) setFailed(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  if (failed)
+    return (
+      <p style={{ color: "#ff7070", fontSize: "0.85rem" }}>
+        Could not load the results. Check your connection and try again.
+      </p>
+    );
+  if (!docs) return <p className="muted small">Loading progress…</p>;
+  const entries = allWorkouts.flatMap((w) => {
+    const d = docs[String(w.id)];
+    if (!d) return [];
+    return (w.blocks || []).flatMap((b) => {
+      const e = d.results?.[`${b.name}|${member}`];
+      if (!e) return [];
+      return exerciseEntries(b, (k) => e[k]).map((x) => ({
+        ...x,
+        date: w.date,
+        session: w.title || `Session #${w.sessionNumber}`,
+      }));
+    });
+  });
+  return <ProgressPanel entries={entries} />;
+}
+
+// ─── Templates: a shared library of sessions the staff can reuse ───────────────
+// templates/{id} = { orgId, name, title, blocks, createdBy, createdByName, createdAt }
+function TemplateBar({ profile, authUser, getCurrent, onApply, allowApply }) {
+  const orgId = profile.orgId,
+    uid = authUser.uid;
+  const [list, setList] = useState([]);
+  const [loadErr, setLoadErr] = useState(false);
+  const [picked, setPicked] = useState("");
+  const [naming, setNaming] = useState(false);
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  const [confirmDel, setConfirmDel] = useState(false);
+
+  useEffect(() => {
+    const unsub = onSnapshot(
+      query(collection(db, "templates"), where("orgId", "==", orgId)),
+      (snap) => {
+        setList(
+          snap.docs
+            .map((d) => ({ id: d.id, ...d.data() }))
+            .sort((a, b) => String(a.name).localeCompare(String(b.name), "sv")),
+        );
+        setLoadErr(false);
+      },
+      () => setLoadErr(true),
+    );
+    return unsub;
+  }, [orgId]);
+
+  const chosen = list.find((t) => t.id === picked);
+  const canDelete =
+    !!chosen && (profile.role === "admin" || chosen.createdBy === uid);
+
+  const apply = () => {
+    if (!chosen) return;
+    onApply({
+      title: chosen.title || "",
+      blocks: (chosen.blocks || []).map((b) => ({
+        ...b,
+        variables: [...(b.variables || [])],
+        exercises: [...(b.exercises || [])],
+      })),
+    });
+    setNote(`Loaded "${chosen.name}". Review it, then Save.`);
+  };
+
+  const saveAs = async () => {
+    const nm = name.trim();
+    if (!nm) {
+      setNote("Give the template a name.");
+      return;
+    }
+    const cur = getCurrent();
+    if (
+      !cur.blocks.length ||
+      cur.blocks.some((b) => !String(b.description || "").trim())
+    ) {
+      setNote(
+        "Every block needs a description before the session can be saved as a template.",
+      );
+      return;
+    }
+    setBusy(true);
+    try {
+      await setDoc(doc(collection(db, "templates")), {
+        orgId,
+        name: nm,
+        title: String(cur.title || "").trim(),
+        blocks: cur.blocks.map((b) => ({
+          name: b.name,
+          description: b.description.trim(),
+          variables: b.variables || [],
+          sets: blockSets(b),
+          exercises: exercisesOf(b),
+        })),
+        createdBy: uid,
+        createdByName: profile.name || authUser.email,
+        createdAt: serverTimestamp(),
+      });
+      setNaming(false);
+      setName("");
+      setNote(`Saved as template "${nm}".`);
+    } catch {
+      setNote(
+        "Could not save the template. Check your permissions and try again.",
+      );
+    }
+    setBusy(false);
+  };
+
+  const removeTemplate = async () => {
+    if (!chosen) return;
+    try {
+      await deleteDoc(doc(db, "templates", chosen.id));
+      setPicked("");
+      setConfirmDel(false);
+      setNote("Template deleted.");
+    } catch {
+      setNote("Could not delete the template.");
+    }
+  };
+
+  return (
+    <div className="card mb-3" style={{ padding: "12px 14px" }}>
+      <div
+        className="muted small"
+        style={{
+          marginBottom: "8px",
+          fontWeight: 700,
+          textTransform: "uppercase",
+          letterSpacing: "0.06em",
+        }}
+      >
+        Templates
+      </div>
+      {allowApply && (
+        <div
+          className="flex gap-2 mb-2"
+          style={{ flexWrap: "wrap", alignItems: "center" }}
+        >
+          <select
+            aria-label="Template"
+            value={picked}
+            onChange={(e) => {
+              setPicked(e.target.value);
+              setConfirmDel(false);
+            }}
+            style={{ width: "auto", minWidth: "180px", flex: "1 1 180px" }}
+          >
+            <option value="">
+              {list.length ? "Start from a template…" : "No templates yet"}
+            </option>
+            {list.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className="btn btn-primary btn-sm"
+            disabled={!chosen}
+            onClick={apply}
+          >
+            Use
+          </button>
+          {canDelete &&
+            (confirmDel ? (
+              <>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setConfirmDel(false)}
+                >
+                  Keep
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-danger btn-sm"
+                  onClick={removeTemplate}
+                >
+                  Confirm delete
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                className="btn btn-ghost btn-xs"
+                onClick={() => setConfirmDel(true)}
+              >
+                Delete template
+              </button>
+            ))}
+        </div>
+      )}
+      {naming ? (
+        <div
+          className="flex gap-2"
+          style={{ flexWrap: "wrap", alignItems: "center" }}
+        >
+          <input
+            aria-label="Template name"
+            value={name}
+            placeholder="Template name"
+            onChange={(e) => setName(e.target.value)}
+            style={{ flex: "1 1 180px" }}
+          />
+          <button
+            type="button"
+            className="btn btn-primary btn-sm"
+            disabled={busy}
+            onClick={saveAs}
+          >
+            {busy ? "Saving…" : "Save template"}
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={() => {
+              setNaming(false);
+              setName("");
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          onClick={() => {
+            setNaming(true);
+            setName(String(getCurrent().title || ""));
+            setNote("");
+          }}
+        >
+          Save this session as a template
+        </button>
+      )}
+      {loadErr && (
+        <p className="small mt-2" style={{ color: "#ff7070" }}>
+          Could not load the templates. Check your connection.
+        </p>
+      )}
+      {note && (
+        <p className="small mt-2" style={{ color: "#c8bfb0" }}>
+          {note}
+        </p>
+      )}
+    </div>
+  );
+}
+
 // ─── Class results: one document per session ──────────────────────────────────
 // classResults/{sessionId} = { results: { "<block>|<member>": { "<variable>": "value" } },
 //                              saved:   { "<block>|<member>": true }, updatedAt }
@@ -1470,6 +2104,8 @@ export default function App() {
               getSessionMembers={getSessionMembers}
               memberRoster={memberRoster}
               setMemberRoster={setMemberRoster}
+              profile={profile}
+              authUser={authUser}
             />
           ) : (
             noAccess
@@ -2316,6 +2952,7 @@ function ClientsView({ profile, authUser, org }) {
         profile={profile}
         authUser={authUser}
         coachName={nameOf(openClient.coachId)}
+        allClients={activeClients}
         onBack={() => setOpenClientId(null)}
       />
     );
@@ -2819,7 +3456,14 @@ function ClientsView({ profile, authUser, org }) {
 }
 
 // ─── CLIENT PLAN (a coach's private schedule for one client) ───────────────────
-function ClientPlan({ client, profile, authUser, coachName, onBack }) {
+function ClientPlan({
+  client,
+  profile,
+  authUser,
+  coachName,
+  allClients = [],
+  onBack,
+}) {
   const today = todayStr();
   const orgId = profile.orgId;
   const [workouts, setWorkouts] = useState([]);
@@ -2830,6 +3474,14 @@ function ClientPlan({ client, profile, authUser, coachName, onBack }) {
   const [formErr, setFormErr] = useState("");
   const [confirmDel, setConfirmDel] = useState(false);
   const [savedNote, setSavedNote] = useState("");
+  const [showProgress, setShowProgress] = useState(false);
+  const [copyClient, setCopyClient] = useState("");
+  const [copyDate, setCopyDate] = useState("");
+  const [copyBusy, setCopyBusy] = useState(false);
+  const [copyMsg, setCopyMsg] = useState("");
+  const copyOptions = allClients.some((c) => c.id === client.id)
+    ? allClients
+    : [client, ...allClients];
 
   // Live: the coach sees a client's results the moment they are logged, and setup changes show up at once
   useEffect(() => {
@@ -2889,6 +3541,9 @@ function ClientPlan({ client, profile, authUser, coachName, onBack }) {
     const ex = wid ? list.find((w) => w.id === wid) : null;
     setFormErr("");
     setConfirmDel(false);
+    setCopyMsg("");
+    setCopyDate("");
+    setCopyClient("");
     setWeekStart(getMondayOfWeek(date));
     setEditing(
       ex
@@ -3003,6 +3658,69 @@ function ClientPlan({ client, profile, authUser, coachName, onBack }) {
       );
     }
     setSaving(false);
+  };
+
+  // Copies what is in the editor (without results) to another day and/or another client
+  const copySession = async () => {
+    setCopyMsg("");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(copyDate || "")) {
+      setCopyMsg("Pick a date to copy to.");
+      return;
+    }
+    if (editing.blocks.some((b) => !b.description.trim())) {
+      setCopyMsg("Every block needs a description before it can be copied.");
+      return;
+    }
+    const target =
+      copyOptions.find((c) => c.id === (copyClient || client.id)) || client;
+    setCopyBusy(true);
+    try {
+      const baseQ = [
+        where("orgId", "==", orgId),
+        where("clientId", "==", target.id),
+        where("date", "==", copyDate),
+      ];
+      const q =
+        profile.role === "coach"
+          ? query(
+              collection(db, "clientWorkouts"),
+              ...baseQ,
+              where("coachId", "==", authUser.uid),
+            )
+          : query(collection(db, "clientWorkouts"), ...baseQ);
+      const existing = await getDocs(q);
+      if (existing.size >= 2) {
+        setCopyMsg(`${target.name} already has 2 sessions on that day.`);
+        setCopyBusy(false);
+        return;
+      }
+      const blocks = editing.blocks.map((b) => ({
+        name: b.name,
+        description: b.description.trim(),
+        variables: b.variables || [],
+        sets: blockSets(b),
+        exercises: exercisesOf(b),
+      }));
+      await setDoc(doc(collection(db, "clientWorkouts")), {
+        date: copyDate,
+        title: (editing.title || "").trim(),
+        blocks,
+        orgId,
+        clientId: target.id,
+        coachId: target.coachId,
+        createdBy: authUser.uid,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      setCopyMsg(
+        `Copied to ${target.id === client.id ? "this client" : target.name} on ${formatDate(copyDate)}.`,
+      );
+    } catch {
+      setCopyMsg(
+        "Could not copy the session. Check your permissions and try again.",
+      );
+    }
+    setCopyBusy(false);
   };
 
   const del = async () => {
@@ -3289,6 +4007,30 @@ function ClientPlan({ client, profile, authUser, coachName, onBack }) {
         </>
       )}
 
+      <div className="flex-between mt-4 mb-3">
+        <h4
+          style={{
+            fontFamily: "'Barlow Condensed',sans-serif",
+            fontSize: "1rem",
+            letterSpacing: "0.08em",
+            color: "#8a7a6a",
+          }}
+        >
+          PROGRESS
+        </h4>
+        <button
+          className="btn btn-ghost btn-sm"
+          onClick={() => setShowProgress((v) => !v)}
+        >
+          {showProgress ? "Hide" : "Show"}
+        </button>
+      </div>
+      {showProgress && (
+        <div className="card mb-4">
+          <ProgressPanel entries={entriesFromWorkouts(workouts)} />
+        </div>
+      )}
+
       {editing && (
         <div
           className="modal-overlay"
@@ -3334,6 +4076,80 @@ function ClientPlan({ client, profile, authUser, coachName, onBack }) {
                   }}
                 >
                   {formErr}
+                </div>
+              )}
+              <TemplateBar
+                profile={profile}
+                authUser={authUser}
+                allowApply={!editing.id}
+                getCurrent={() => ({
+                  title: editing.title,
+                  blocks: editing.blocks,
+                })}
+                onApply={(t) =>
+                  setEditing((p) => ({
+                    ...p,
+                    title: p.title || t.title,
+                    blocks: t.blocks,
+                  }))
+                }
+              />
+              {editing.id && (
+                <div className="card mb-3" style={{ padding: "12px 14px" }}>
+                  <div
+                    className="muted small"
+                    style={{
+                      marginBottom: "8px",
+                      fontWeight: 700,
+                      textTransform: "uppercase",
+                      letterSpacing: "0.06em",
+                    }}
+                  >
+                    Copy this session
+                  </div>
+                  <div
+                    className="flex gap-2"
+                    style={{ flexWrap: "wrap", alignItems: "center" }}
+                  >
+                    <select
+                      aria-label="Copy to client"
+                      value={copyClient || client.id}
+                      onChange={(e) => setCopyClient(e.target.value)}
+                      style={{
+                        width: "auto",
+                        minWidth: "170px",
+                        flex: "1 1 170px",
+                      }}
+                    >
+                      {copyOptions.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.id === client.id
+                            ? `${c.name} (this client)`
+                            : c.name}
+                        </option>
+                      ))}
+                    </select>
+                    <input
+                      type="date"
+                      aria-label="Copy to date"
+                      value={copyDate}
+                      onChange={(e) => setCopyDate(e.target.value)}
+                      style={{ width: "auto" }}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm"
+                      disabled={copyBusy}
+                      onClick={copySession}
+                    >
+                      {copyBusy ? "Copying…" : "Copy"}
+                    </button>
+                  </div>
+                  {copyMsg && (
+                    <p className="small mt-2" style={{ color: "#c8bfb0" }}>
+                      {copyMsg}
+                    </p>
+                  )}
                 </div>
               )}
               {workouts.some(
@@ -3457,6 +4273,7 @@ function MyPlanView({ profile, authUser, org }) {
   const [saveErr, setSaveErr] = useState("");
   const blockRefs = useRef([]);
   const jumped = useRef(false);
+  const [showProgress, setShowProgress] = useState(false);
 
   // Live: if the coach changes the session (for example which fields to log), it updates here at once
   useEffect(() => {
@@ -3975,6 +4792,30 @@ function MyPlanView({ profile, authUser, org }) {
           {recent.slice(0, 8).map(sessionRow)}
         </>
       )}
+
+      <div className="flex-between mt-4 mb-3">
+        <h4
+          style={{
+            fontFamily: "'Barlow Condensed',sans-serif",
+            fontSize: "1rem",
+            letterSpacing: "0.08em",
+            color: "#8a7a6a",
+          }}
+        >
+          MY PROGRESS
+        </h4>
+        <button
+          className="btn btn-ghost btn-sm"
+          onClick={() => setShowProgress((v) => !v)}
+        >
+          {showProgress ? "Hide" : "Show"}
+        </button>
+      </div>
+      {showProgress && (
+        <div className="card mb-4">
+          <ProgressPanel entries={entriesFromWorkouts(workouts)} />
+        </div>
+      )}
     </div>
   );
 }
@@ -3996,6 +4837,8 @@ function AdminView({
   getSessionMembers,
   memberRoster,
   setMemberRoster,
+  profile,
+  authUser,
 }) {
   const [tab, setTab] = useState("today");
   const [confirmDel, setConfirmDel] = useState(false);
@@ -4187,12 +5030,15 @@ function AdminView({
           memberRoster={memberRoster}
           getSessionMembers={getSessionMembers}
           setSessionMembersForWod={setSessionMembersForWod}
+          profile={profile}
+          authUser={authUser}
         />
       )}
       {tab === "members" && (
         <MembersAdmin
           memberRoster={memberRoster}
           setMemberRoster={setMemberRoster}
+          allWorkouts={periods.flatMap((p) => p.workouts)}
         />
       )}
       {tab === "history" && (
@@ -4648,12 +5494,13 @@ function WodEditor({
 }
 
 // ─── MEMBERS ADMIN ─────────────────────────────────────────────────────────────
-function MembersAdmin({ memberRoster, setMemberRoster }) {
+function MembersAdmin({ memberRoster, setMemberRoster, allWorkouts = [] }) {
   const [newName, setNewName] = useState("");
   const [confirmDel, setConfirmDel] = useState(null);
   const [editingName, setEditingName] = useState(null);
   const [editValue, setEditValue] = useState("");
   const [search, setSearch] = useState("");
+  const [progressFor, setProgressFor] = useState(null);
 
   const addMember = () => {
     const n = newName.trim();
@@ -4753,7 +5600,7 @@ function MembersAdmin({ memberRoster, setMemberRoster }) {
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))",
+            gridTemplateColumns: "repeat(auto-fill,minmax(270px,1fr))",
             gap: "8px",
           }}
         >
@@ -4851,6 +5698,13 @@ function MembersAdmin({ memberRoster, setMemberRoster }) {
                   <>
                     <button
                       className="btn btn-ghost btn-xs"
+                      onClick={() => setProgressFor(name)}
+                      title={`Progress for ${name}`}
+                    >
+                      Progress
+                    </button>
+                    <button
+                      className="btn btn-ghost btn-xs"
                       onClick={() => startEdit(name)}
                       style={{ color: "#c8bfb0" }}
                     >
@@ -4870,6 +5724,32 @@ function MembersAdmin({ memberRoster, setMemberRoster }) {
           ))}
         </div>
       )}
+
+      {progressFor && (
+        <div
+          className="modal-overlay"
+          onClick={(e) => e.target === e.currentTarget && setProgressFor(null)}
+        >
+          <div className="modal-inner">
+            <div className="modal-header flex-between">
+              <h3 style={{ color: "#FF6B1A" }}>Progress · {progressFor}</h3>
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={() => setProgressFor(null)}
+              >
+                Close
+              </button>
+            </div>
+            <div className="modal-body">
+              <ClassProgress
+                key={progressFor}
+                member={progressFor}
+                allWorkouts={allWorkouts}
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -4883,6 +5763,8 @@ function PlannerAdmin({
   memberRoster,
   getSessionMembers,
   setSessionMembersForWod,
+  profile,
+  authUser,
 }) {
   const today = todayStr();
   const periodMonday = getMondayOfWeek(period.startDate || today);
@@ -4899,6 +5781,8 @@ function PlannerAdmin({
   const [editWod, setEditWod] = useState(null);
   const [modalTab, setModalTab] = useState("wod"); // "wod" | "participants"
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [copyDate, setCopyDate] = useState("");
+  const [copyMsg, setCopyMsg] = useState("");
 
   const weekStart = addDays(periodMonday, weekOffset * 7);
   const weekDates = getWeekDates(weekStart);
@@ -4917,6 +5801,8 @@ function PlannerAdmin({
     setSelDate(date);
     setModalTab("wod");
     setConfirmDelete(false);
+    setCopyDate("");
+    setCopyMsg("");
     const ex = wodId ? list.find((w) => w.id === wodId) : null;
     if (ex) {
       setEditWod({ ...ex, blocks: ex.blocks.map((b) => ({ ...b })) });
@@ -4937,6 +5823,36 @@ function PlannerAdmin({
     setSelDate(null);
     setEditWod(null);
   };
+  // Copy this session (without results or participants) to another day, as a new session
+  const copyWod = () => {
+    setCopyMsg("");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(copyDate || "")) {
+      setCopyMsg("Pick a date to copy to.");
+      return;
+    }
+    if (editWod.blocks.some((b) => !String(b.description || "").trim())) {
+      setCopyMsg("Every block needs a description before it can be copied.");
+      return;
+    }
+    if (wodsForDate(copyDate).length >= 2) {
+      setCopyMsg("That day already has 2 sessions.");
+      return;
+    }
+    const nums = period.workouts.map((w) => w.sessionNumber);
+    const blocks = editWod.blocks.map((b) => ({
+      ...cleanBlock(b),
+      variables: [...(b.variables || [])],
+    }));
+    addWorkout(period.id, {
+      ...editWod,
+      blocks,
+      id: Date.now(),
+      date: copyDate,
+      sessionNumber: nums.length ? Math.max(...nums) + 1 : 1,
+    });
+    setCopyMsg(`Copied to ${formatDate(copyDate)}.`);
+  };
+
   const deleteDay = () => {
     const ex = period.workouts.find((w) => w.id === editWod.id);
     if (ex && !confirmDelete) {
@@ -5316,6 +6232,65 @@ function PlannerAdmin({
               {/* WoD tab */}
               {modalTab === "wod" && (
                 <>
+                  {profile && authUser && (
+                    <TemplateBar
+                      profile={profile}
+                      authUser={authUser}
+                      allowApply={
+                        !period.workouts.some((w) => w.id === editWod.id)
+                      }
+                      getCurrent={() => ({
+                        title: editWod.title,
+                        blocks: editWod.blocks,
+                      })}
+                      onApply={(t) =>
+                        setEditWod((p) => ({
+                          ...p,
+                          title: p.title || t.title,
+                          blocks: t.blocks,
+                        }))
+                      }
+                    />
+                  )}
+                  {period.workouts.some((w) => w.id === editWod.id) && (
+                    <div className="card mb-3" style={{ padding: "12px 14px" }}>
+                      <div
+                        className="muted small"
+                        style={{
+                          marginBottom: "8px",
+                          fontWeight: 700,
+                          textTransform: "uppercase",
+                          letterSpacing: "0.06em",
+                        }}
+                      >
+                        Copy this session
+                      </div>
+                      <div
+                        className="flex gap-2"
+                        style={{ flexWrap: "wrap", alignItems: "center" }}
+                      >
+                        <input
+                          type="date"
+                          aria-label="Copy to date"
+                          value={copyDate}
+                          onChange={(e) => setCopyDate(e.target.value)}
+                          style={{ width: "auto" }}
+                        />
+                        <button
+                          type="button"
+                          className="btn btn-primary btn-sm"
+                          onClick={copyWod}
+                        >
+                          Copy to this day
+                        </button>
+                      </div>
+                      {copyMsg && (
+                        <p className="small mt-2" style={{ color: "#c8bfb0" }}>
+                          {copyMsg}
+                        </p>
+                      )}
+                    </div>
+                  )}
                   <div className="grid-2 mb-3">
                     <div>
                       <label>WoD Title</label>
@@ -5777,6 +6752,7 @@ function MemberView({ allWorkouts, periods, getSessionMembers, memberRoster }) {
   const [openBlockIdx, setOpenBlockIdx] = useState(null);
   const blockRefs = useRef([]);
   const [openClassResults, setOpenClassResults] = useState({});
+  const [showProgress, setShowProgress] = useState(false);
   const toggleClassResults = (name) =>
     setOpenClassResults((p) => ({ ...p, [name]: !p[name] }));
   useEffect(() => {
@@ -6325,6 +7301,45 @@ function MemberView({ allWorkouts, periods, getSessionMembers, memberRoster }) {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Progress for the selected member */}
+      {memberName && (
+        <div className="card mb-4">
+          <div className="flex-between">
+            <div>
+              <div
+                style={{
+                  fontSize: "0.75rem",
+                  color: "#8a7a6a",
+                  fontWeight: 700,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.06em",
+                }}
+              >
+                My progress
+              </div>
+              <div style={{ fontWeight: 600, fontSize: "0.95rem" }}>
+                {memberName}
+              </div>
+            </div>
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={() => setShowProgress((v) => !v)}
+            >
+              {showProgress ? "Hide" : "Show"}
+            </button>
+          </div>
+          {showProgress && (
+            <div className="mt-3">
+              <ClassProgress
+                key={memberName}
+                member={memberName}
+                allWorkouts={allWorkouts}
+              />
+            </div>
+          )}
         </div>
       )}
 
