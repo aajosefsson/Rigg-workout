@@ -1,16 +1,25 @@
-# React + Vite
+# Rigg Workout
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Rigg Workout is a web app for planning and logging training sessions. It covers group classes and private plans for individual clients. Built with React + Vite on Firebase (Firestore + Authentication) and deployed to Vercel from `main`.
 
-Currently, two official plugins are available:
+## Running locally
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+```sh
+npm install
+cp .env.example .env   # then fill in the Firebase config values
+npm run dev
+```
 
-## React Compiler
+Other scripts: `npm run build`, `npm run preview`, `npm run lint`.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Roles
 
-## Expanding the ESLint configuration
+- **Admin**: plans the group classes (periods, sessions, participants, member roster), invites coaches and clients, and manages everyone in the organization.
+- **Coach**: invites clients and plans private sessions for their own clients.
+- **Client**: sees their own plan and logs their results.
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+The **Home** page (workout of the day and class results) is public and needs no account.
+
+## Firestore rules
+
+The security rules live in [`firestore.rules`](firestore.rules). They are **not** deployed automatically. After changing the file, publish it by hand in the Firebase Console: **Firestore → Rules → paste → Publish**.

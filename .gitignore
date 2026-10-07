@@ -22,3 +22,8 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Environment (Firebase config) - copy .env.example to .env
+.env
+.env.*
+!.env.example
