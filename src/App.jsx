@@ -915,31 +915,46 @@ function ResultsTable({
 // Every write only touches ONE member's entry (merge), so two people logging at the same
 // time can never overwrite each other, and everyone watching sees changes live.
 function useClassResults(wodId) {
-  const [data, setData] = useState({ results: {}, saved: {} });
-  const [ready, setReady] = useState(false); // true once the first answer from the database has arrived
-  const [error, setError] = useState(""); // e.g. "permission-denied" when results can't be read
+  // The latest answer from the database, tagged with the session it belongs to. Until the
+  // answer for the CURRENT session has arrived, the hook reports empty data and ready = false.
+  const [snapState, setSnapState] = useState({
+    id: null,
+    results: {},
+    saved: {},
+    error: "", // e.g. "permission-denied" when results can't be read
+  });
 
   useEffect(() => {
-    setData({ results: {}, saved: {} });
-    setReady(false);
-    setError("");
     if (wodId === undefined || wodId === null) return;
+    const id = String(wodId);
     const unsub = onSnapshot(
-      doc(db, "classResults", String(wodId)),
+      doc(db, "classResults", id),
       (snap) => {
         const d = snap.exists() ? snap.data() : {};
-        setData({ results: d.results || {}, saved: d.saved || {} });
-        setReady(true);
-        setError("");
+        setSnapState({
+          id,
+          results: d.results || {},
+          saved: d.saved || {},
+          error: "",
+        });
       },
       (err) => {
         console.error("Could not read class results:", err);
-        setError(err?.code || "error");
-        setReady(true);
+        setSnapState((prev) => ({
+          ...(prev.id === id ? prev : { results: {}, saved: {} }),
+          id,
+          error: err?.code || "error",
+        }));
       },
     );
     return unsub;
   }, [wodId]);
+
+  const isCurrent =
+    wodId !== undefined && wodId !== null && snapState.id === String(wodId);
+  const data = isCurrent ? snapState : { results: {}, saved: {} };
+  const ready = isCurrent; // true once the first answer for this session has arrived
+  const error = isCurrent ? snapState.error : "";
 
   const ref = () => doc(db, "classResults", String(wodId));
   const entry = (block, member) => `${block}|${member}`;
@@ -1212,7 +1227,6 @@ export default function App() {
       setAuthReady(true);
     });
     return unsub;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const finishRegistration = async () => {
@@ -1222,7 +1236,9 @@ export default function App() {
     setProfileLoading(false);
     try {
       window.history.replaceState({}, "", window.location.pathname);
-    } catch {}
+    } catch {
+      // only tidies the ?invite= from the address bar; harmless if the browser refuses
+    }
     setInviteCode("");
     setView("login"); // derived routing sends the new user to their role's home
   };
@@ -1239,7 +1255,9 @@ export default function App() {
   const logout = async () => {
     try {
       await signOut(auth);
-    } catch {}
+    } catch (err) {
+      console.warn("Sign out failed:", err);
+    }
     setView("member");
   };
   const [periods, setPeriods] = useState([]);
@@ -1391,10 +1409,8 @@ export default function App() {
       const next = prev.filter((p) => p.id !== id);
       return next.length ? next : [EMPTY_PERIOD()];
     });
-    setActivePeriodId((prev) => {
-      const rem = periods.filter((p) => p.id !== id);
-      return rem.length ? rem[0].id : null;
-    });
+    const rem = periods.filter((p) => p.id !== id);
+    setActivePeriodId(rem.length ? rem[0].id : null);
   };
   const addWorkout = (periodId, wod) =>
     editPeriods((prev) =>
@@ -1597,7 +1613,9 @@ export default function App() {
             onLogout={async () => {
               try {
                 await signOut(auth);
-              } catch {}
+              } catch (err) {
+                console.warn("Sign out failed:", err);
+              }
             }}
             onBegin={() => {
               registeringRef.current = true;
@@ -1634,7 +1652,6 @@ export default function App() {
               addWorkout={addWorkout}
               updateWorkout={updateWorkout}
               deleteWorkout={deleteWorkout}
-              sessionMembers={sessionMembers}
               setSessionMembersForWod={setSessionMembersForWod}
               getSessionMembers={getSessionMembers}
               memberRoster={memberRoster}
@@ -1704,7 +1721,10 @@ function LoginView({ onRegister }) {
     }
     try {
       await sendPasswordResetEmail(auth, email.trim());
-    } catch {}
+    } catch {
+      // deliberately ignored: the same message is shown either way, so nobody can find out
+      // which email addresses have an account
+    }
     setInfo(
       "If an account exists for that email, a password reset link has been sent.",
     );
@@ -2031,7 +2051,12 @@ function RegisterView({
       if (cred?.user) {
         try {
           await deleteUser(cred.user);
-        } catch {}
+        } catch (cleanupErr) {
+          console.warn(
+            "Could not remove the half-created account:",
+            cleanupErr,
+          );
+        }
       } // never leave a half-created account behind
       onAbort();
       setWorking(false);
@@ -2208,6 +2233,7 @@ function ClientsView({ profile, authUser, org }) {
     uid = authUser.uid;
   const [people, setPeople] = useState([]);
   const [invites, setInvites] = useState([]);
+  const [loadedAt, setLoadedAt] = useState(0); // when invites were fetched; expiry is judged against this
   const [loadErr, setLoadErr] = useState("");
   const [tick, setTick] = useState(0);
   const [role, setRole] = useState("member");
@@ -2250,6 +2276,7 @@ function ClientsView({ profile, authUser, org }) {
         if (!cancelled) {
           setPeople(us.docs.map((d) => ({ id: d.id, ...d.data() })));
           setInvites(is.docs.map((d) => ({ id: d.id, ...d.data() })));
+          setLoadedAt(Date.now());
           setLoadErr("");
         }
       } catch {
@@ -2284,7 +2311,7 @@ function ClientsView({ profile, authUser, org }) {
     myRole === "admin" ? activeClients.filter((c) => !coachOk(c.coachId)) : [];
   const pending = invites.filter(
     (i) =>
-      !i.used && i.expiresAt?.toMillis && i.expiresAt.toMillis() > Date.now(),
+      !i.used && i.expiresAt?.toMillis && i.expiresAt.toMillis() > loadedAt,
   );
   const fmt = (ts) =>
     ts?.toMillis ? new Date(ts.toMillis()).toLocaleDateString("en-GB") : "";
@@ -4189,7 +4216,6 @@ function AdminView({
   addWorkout,
   updateWorkout,
   deleteWorkout,
-  sessionMembers,
   setSessionMembersForWod,
   getSessionMembers,
   memberRoster,
@@ -5980,22 +6006,24 @@ function MemberView({ allWorkouts, periods, getSessionMembers, memberRoster }) {
     try {
       if (memberName) localStorage.setItem("rigg_member_name", memberName);
       else localStorage.removeItem("rigg_member_name");
-    } catch {}
+    } catch {
+      // storage can be blocked (private mode); remembering the name is only a convenience
+    }
   }, [memberName]);
 
   const weekStart = addDays(todayMonday, weekOffset * 7);
   const weekDates = getWeekDates(weekStart);
 
-  // When week offset changes, anchor selected date
-  useEffect(() => {
-    if (!weekDates.includes(selectedDate)) {
-      const todayInWeek = weekDates.includes(today);
-      const firstWod = weekDates.find((d) =>
-        allWorkouts.some((w) => w.date === d),
-      );
-      setSelectedDate(todayInWeek ? today : firstWod || weekDates[0]);
+  // Week arrows: if the selected date isn't in the new week, pick today, the first day
+  // with a session, or Monday
+  const goToWeek = (offset) => {
+    const dates = getWeekDates(addDays(todayMonday, offset * 7));
+    setWeekOffset(offset);
+    if (!dates.includes(selectedDate)) {
+      const firstWod = dates.find((d) => allWorkouts.some((w) => w.date === d));
+      setSelectedDate(dates.includes(today) ? today : firstWod || dates[0]);
     }
-  }, [weekOffset]);
+  };
 
   const wodsForDate = (date) =>
     allWorkouts
@@ -6168,7 +6196,7 @@ function MemberView({ allWorkouts, periods, getSessionMembers, memberRoster }) {
         <div className="flex-between mb-2">
           <button
             className="wod-nav-btn"
-            onClick={() => setWeekOffset((w) => w - 1)}
+            onClick={() => goToWeek(weekOffset - 1)}
           >
             ← Week
           </button>
@@ -6188,7 +6216,7 @@ function MemberView({ allWorkouts, periods, getSessionMembers, memberRoster }) {
           </span>
           <button
             className="wod-nav-btn"
-            onClick={() => setWeekOffset((w) => w + 1)}
+            onClick={() => goToWeek(weekOffset + 1)}
           >
             Week →
           </button>
