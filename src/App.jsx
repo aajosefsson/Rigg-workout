@@ -103,6 +103,11 @@ const EMPTY_PERIOD = () => ({
   durationWeeks: 8,
   workouts: [],
 });
+// Next free session number in a period (values that aren't numbers are ignored)
+const nextSessionNumber = (workouts) => {
+  const nums = workouts.map((w) => w.sessionNumber).filter(Number.isFinite);
+  return nums.length ? Math.max(...nums) + 1 : 1;
+};
 const DEFAULT_MEMBERS = [
   "Erik",
   "Sofia",
@@ -1353,6 +1358,16 @@ export default function App() {
     setSessionMembers((prev) => ({ ...prev, [wodId]: mems }));
   };
   const getSessionMembers = (wodId) => sessionMembers[wodId] || [];
+  // Removes the participant lists of deleted sessions (the one place this is done)
+  const dropSessionMembers = (wodIds) => {
+    if (!wodIds.some((id) => id in sessionMembers)) return;
+    markDirty("cf_session_members");
+    setSessionMembers((prev) => {
+      const next = { ...prev };
+      wodIds.forEach((id) => delete next[id]);
+      return next;
+    });
+  };
 
   const updatePeriod = (id, updates) =>
     editPeriods((prev) =>
@@ -1367,9 +1382,11 @@ export default function App() {
     deleteDoc(doc(db, "classResults", String(wodId))).catch(() => {});
   };
   const deletePeriod = (id) => {
-    (periods.find((p) => p.id === id)?.workouts || []).forEach((w) =>
-      dropClassResults(w.id),
+    const wodIds = (periods.find((p) => p.id === id)?.workouts || []).map(
+      (w) => w.id,
     );
+    wodIds.forEach(dropClassResults);
+    dropSessionMembers(wodIds);
     editPeriods((prev) => {
       const next = prev.filter((p) => p.id !== id);
       return next.length ? next : [EMPTY_PERIOD()];
@@ -1398,6 +1415,7 @@ export default function App() {
     );
   const deleteWorkout = (periodId, wodId) => {
     dropClassResults(wodId);
+    dropSessionMembers([wodId]);
     editPeriods((prev) =>
       prev.map((p) =>
         p.id === periodId
@@ -3789,7 +3807,7 @@ function MyPlanView({ profile, authUser, org }) {
           </span>
         </div>
         <span className="muted small">
-          {w.blocks.every((b) => w.doneBlocks?.[b.name])
+          {w.blocks.length > 0 && w.blocks.every((b) => w.doneBlocks?.[b.name])
             ? "✓ logged"
             : `${w.blocks.length} block${w.blocks.length !== 1 ? "s" : ""}`}
         </span>
@@ -4400,16 +4418,25 @@ function TodayAdmin({
     .sort(
       (a, b) => (a.sessionNumber || 0) - (b.sessionNumber || 0) || a.id - b.id,
     );
-  const canAddMore = todayWods.length < 2;
   const [editing, setEditing] = useState(null);
+  // A new WoD is a draft (with its own participant list) until Save; Cancel/Delete just drop it
+  const [draft, setDraft] = useState(null);
+  const [draftMembers, setDraftMembers] = useState([]);
+  const canAddMore = todayWods.length + (draft ? 1 : 0) < 2;
 
   const startNew = () => {
     if (!canAddMore) return;
-    const nums = period.workouts.map((w) => w.sessionNumber);
-    const next = nums.length ? Math.max(...nums) + 1 : 1;
-    const wod = { ...EMPTY_WOD(), sessionNumber: next, date: today };
-    addWorkout(period.id, wod);
-    setEditing(wod.id);
+    const wod = {
+      ...EMPTY_WOD(),
+      sessionNumber: nextSessionNumber(period.workouts),
+      date: today,
+    };
+    setDraft(wod);
+    setDraftMembers([]);
+  };
+  const discardDraft = () => {
+    setDraft(null);
+    setDraftMembers([]);
   };
 
   return (
@@ -4433,7 +4460,7 @@ function TodayAdmin({
       {!canAddMore && (
         <p className="muted small mb-3">A day can have at most 2 sessions.</p>
       )}
-      {todayWods.length === 0 && (
+      {todayWods.length === 0 && !draft && (
         <div className="card text-center" style={{ padding: "40px" }}>
           <div style={{ fontSize: "2rem", marginBottom: "8px" }}>💪</div>
           <p className="muted">No workout scheduled for today. Create one!</p>
@@ -4459,6 +4486,24 @@ function TodayAdmin({
           memberRoster={memberRoster}
         />
       ))}
+      {draft && (
+        <WodEditor
+          key={draft.id}
+          wod={draft}
+          periodId={period.id}
+          isEditing
+          onEdit={discardDraft}
+          onSave={(w) => {
+            addWorkout(period.id, w);
+            if (draftMembers.length) setSessionMembersForWod(w.id, draftMembers);
+            discardDraft();
+          }}
+          onDelete={discardDraft}
+          getSessionMembers={() => draftMembers}
+          setSessionMembersForWod={(_, mems) => setDraftMembers(mems)}
+          memberRoster={memberRoster}
+        />
+      )}
     </div>
   );
 }
@@ -4481,7 +4526,11 @@ function WodEditor({
     ...members,
     ...cr.entryMembers().filter((m) => !members.includes(m)),
   ];
-  useEffect(() => setLocal(wod), [wod]);
+  // Editing always starts from the saved session, so Cancel throws away unsaved changes
+  const toggleEdit = () => {
+    if (!isEditing) setLocal(wod);
+    onEdit();
+  };
   const [expandedBlocks, setExpandedBlocks] = useState({});
   const [confirmDel, setConfirmDel] = useState(false);
   const toggleBlockView = (name) =>
@@ -4571,7 +4620,7 @@ function WodEditor({
           )}
         </div>
         <div className="flex gap-2">
-          <button className="btn btn-ghost btn-sm" onClick={onEdit}>
+          <button className="btn btn-ghost btn-sm" onClick={toggleEdit}>
             {isEditing ? "Cancel" : "Edit"}
           </button>
           {isEditing && (
@@ -4835,6 +4884,7 @@ function MembersAdmin({ memberRoster, setMemberRoster }) {
   const [confirmDel, setConfirmDel] = useState(null);
   const [editingName, setEditingName] = useState(null);
   const [editValue, setEditValue] = useState("");
+  const [confirmRename, setConfirmRename] = useState(null); // {from, to}
   const [search, setSearch] = useState("");
 
   const addMember = () => {
@@ -4851,6 +4901,7 @@ function MembersAdmin({ memberRoster, setMemberRoster }) {
     } else {
       setConfirmDel(name);
       setEditingName(null);
+      setConfirmRename(null);
     }
   };
 
@@ -4858,23 +4909,22 @@ function MembersAdmin({ memberRoster, setMemberRoster }) {
     setEditingName(name);
     setEditValue(name);
     setConfirmDel(null);
+    setConfirmRename(null);
   };
 
+  // A rename is confirmed first: logged results and attendance stay under the old name
   const saveEdit = (originalName) => {
     const trimmed = editValue.trim();
-    if (!trimmed) {
-      setEditingName(null);
-      return;
-    }
-    // don't allow duplicate names (ignore the one being edited)
-    if (memberRoster.some((n) => n === trimmed && n !== originalName)) {
-      setEditingName(null);
-      return;
-    }
-    setMemberRoster(
-      memberRoster.map((n) => (n === originalName ? trimmed : n)),
-    );
     setEditingName(null);
+    if (!trimmed || trimmed === originalName) return;
+    // don't allow duplicate names (ignore the one being edited)
+    if (memberRoster.some((n) => n === trimmed && n !== originalName)) return;
+    setConfirmRename({ from: originalName, to: trimmed });
+  };
+  const applyRename = () => {
+    const { from, to } = confirmRename;
+    setMemberRoster(memberRoster.map((n) => (n === from ? to : n)));
+    setConfirmRename(null);
   };
 
   const filteredRoster = memberRoster.filter((n) =>
@@ -4948,6 +4998,7 @@ function MembersAdmin({ memberRoster, setMemberRoster }) {
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "space-between",
+                flexWrap: "wrap",
                 gap: "8px",
               }}
             >
@@ -5014,6 +5065,21 @@ function MembersAdmin({ memberRoster, setMemberRoster }) {
                       ✕
                     </button>
                   </>
+                ) : confirmRename?.from === name ? (
+                  <>
+                    <button
+                      className="btn btn-primary btn-xs"
+                      onClick={applyRename}
+                    >
+                      Rename
+                    </button>
+                    <button
+                      className="btn btn-ghost btn-xs"
+                      onClick={() => setConfirmRename(null)}
+                    >
+                      No
+                    </button>
+                  </>
                 ) : confirmDel === name ? (
                   <>
                     <button
@@ -5048,6 +5114,16 @@ function MembersAdmin({ memberRoster, setMemberRoster }) {
                   </>
                 )}
               </div>
+              {(confirmRename?.from === name || confirmDel === name) && (
+                <p
+                  className="small"
+                  style={{ flexBasis: "100%", color: "#ff9c9c", margin: 0 }}
+                >
+                  {confirmRename?.from === name
+                    ? `Rename to "${confirmRename.to}"? Earlier results and attendance stay under "${name}".`
+                    : `Remove ${name} from the roster? Earlier results and attendance stay under this name.`}
+                </p>
+              )}
             </div>
           ))}
         </div>
@@ -5081,6 +5157,7 @@ function PlannerAdmin({
   const [editWod, setEditWod] = useState(null);
   const [modalTab, setModalTab] = useState("wod"); // "wod" | "participants"
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [draftMems, setDraftMems] = useState([]); // participants of a session that isn't saved yet
 
   const weekStart = addDays(periodMonday, weekOffset * 7);
   const weekDates = getWeekDates(weekStart);
@@ -5103,19 +5180,22 @@ function PlannerAdmin({
     if (ex) {
       setEditWod({ ...ex, blocks: ex.blocks.map((b) => ({ ...b })) });
     } else {
-      const nums = period.workouts.map((w) => w.sessionNumber);
       setEditWod({
         ...EMPTY_WOD(),
         date,
-        sessionNumber: nums.length ? Math.max(...nums) + 1 : 1,
+        sessionNumber: nextSessionNumber(period.workouts),
       });
     }
+    setDraftMems([]);
   };
   const saveWod = () => {
     const exists = period.workouts.some((w) => w.id === editWod.id);
     const cleaned = { ...editWod, blocks: editWod.blocks.map(cleanBlock) };
     if (exists) updateWorkout(period.id, cleaned);
-    else addWorkout(period.id, cleaned);
+    else {
+      addWorkout(period.id, cleaned);
+      if (draftMems.length) setSessionMembersForWod(cleaned.id, draftMems);
+    }
     setSelDate(null);
     setEditWod(null);
   };
@@ -5125,27 +5205,30 @@ function PlannerAdmin({
       setConfirmDelete(true);
       return;
     } // saved sessions need a second click to confirm
-    if (ex) {
-      deleteWorkout(period.id, ex.id);
-      setSessionMembersForWod(ex.id, []);
-    }
+    if (ex) deleteWorkout(period.id, ex.id); // also removes its participant list
     setSelDate(null);
     setEditWod(null);
   };
 
-  // Participants for the currently-open modal (use wodId if exists, else use selDate as temp key)
+  // Participants for the open modal. A saved session updates its list right away; an unsaved
+  // one keeps the list here and only stores it on Save, so Cancel leaves nothing behind.
   const currentWodId = editWod?.id;
-  const sessionMems = currentWodId ? getSessionMembers(currentWodId) : [];
+  const isSavedWod =
+    !!editWod && period.workouts.some((w) => w.id === currentWodId);
+  const sessionMems = !editWod
+    ? []
+    : isSavedWod
+      ? getSessionMembers(currentWodId)
+      : draftMems;
+  const setMems = (mems) =>
+    isSavedWod
+      ? setSessionMembersForWod(currentWodId, mems)
+      : setDraftMems(mems);
   const toggleParticipant = (name) => {
-    if (!currentWodId) return;
-    const cur = getSessionMembers(currentWodId);
-    if (cur.includes(name))
-      setSessionMembersForWod(
-        currentWodId,
-        cur.filter((n) => n !== name),
-      );
-    else if (cur.length < 16)
-      setSessionMembersForWod(currentWodId, [...cur, name]);
+    if (!editWod) return;
+    if (sessionMems.includes(name))
+      setMems(sessionMems.filter((n) => n !== name));
+    else if (sessionMems.length < 16) setMems([...sessionMems, name]);
   };
 
   const allWeeks = Array.from({ length: totalWeeks }, (_, i) =>
@@ -5641,9 +5724,7 @@ function PlannerAdmin({
                     {sessionMems.length > 0 && (
                       <button
                         className="btn btn-ghost btn-xs"
-                        onClick={() =>
-                          setSessionMembersForWod(currentWodId, [])
-                        }
+                        onClick={() => setMems([])}
                       >
                         Clear all
                       </button>
@@ -6013,7 +6094,7 @@ function MemberView({ allWorkouts, periods, getSessionMembers, memberRoster }) {
     touchStart.current = e.touches[0].clientX;
   };
   const handleTouchEnd = (e) => {
-    if (!touchStart.current) return;
+    if (touchStart.current === null) return; // clientX can legitimately be 0
     const dx = e.changedTouches[0].clientX - touchStart.current;
     const ci = weekDates.indexOf(selectedDate);
     if (dx > 60 && ci > 0) setSelectedDate(weekDates[ci - 1]);
