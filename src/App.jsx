@@ -1067,6 +1067,90 @@ async function migrateLegacyResults(validIds, onStart) {
   return { skipped: false, count };
 }
 
+// ─── Backup (admin, read-only) ─────────────────────────────────────────────────
+// Firestore Timestamps become ISO strings so the file is plain JSON
+const toPlain = (v) => {
+  if (v instanceof Timestamp) return v.toDate().toISOString();
+  if (Array.isArray(v)) return v.map(toPlain);
+  if (v && typeof v === "object")
+    return Object.fromEntries(
+      Object.entries(v).map(([k, x]) => [k, toPlain(x)]),
+    );
+  return v;
+};
+
+// Only reads from the database, never writes
+async function downloadBackup(orgId) {
+  const planningIds = ["cf_periods", "cf_session_members", "cf_member_roster"];
+  const [planningSnaps, crSnap, cwSnap] = await Promise.all([
+    Promise.all(planningIds.map((id) => getDoc(doc(db, "riggworkout", id)))),
+    getDocs(collection(db, "classResults")),
+    getDocs(
+      query(collection(db, "clientWorkouts"), where("orgId", "==", orgId)),
+    ),
+  ]);
+  const byId = (snap) =>
+    Object.fromEntries(snap.docs.map((d) => [d.id, toPlain(d.data())]));
+  const backup = {
+    exportedAt: new Date().toISOString(),
+    planning: Object.fromEntries(
+      planningSnaps.map((s, i) => [
+        planningIds[i],
+        s.exists() ? toPlain(s.data()) : null,
+      ]),
+    ),
+    classResults: byId(crSnap),
+    clientWorkouts: byId(cwSnap),
+  };
+  const url = URL.createObjectURL(
+    new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" }),
+  );
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `rigg-backup-${todayStr()}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function BackupButton({ orgId }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const run = async () => {
+    setBusy(true);
+    setErr("");
+    try {
+      await downloadBackup(orgId);
+    } catch (e) {
+      console.error("Backup failed:", e);
+      setErr(
+        `Could not create the backup (${e?.code || "error"}). Check your connection and try again.`,
+      );
+    }
+    setBusy(false);
+  };
+  return (
+    <div style={{ textAlign: "right" }}>
+      <button
+        className="btn btn-ghost btn-sm"
+        disabled={busy}
+        style={{ opacity: busy ? 0.6 : 1 }}
+        onClick={run}
+      >
+        {busy ? "Preparing backup…" : "Download backup"}
+      </button>
+      {err && (
+        <div
+          style={{ color: "#ff7070", fontSize: "0.8rem", marginTop: "6px" }}
+        >
+          {err}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   const [view, setView] = useState(() =>
     readInviteParam() ? "register" : "member",
@@ -1470,6 +1554,7 @@ export default function App() {
               getSessionMembers={getSessionMembers}
               memberRoster={memberRoster}
               setMemberRoster={setMemberRoster}
+              orgId={profile.orgId}
             />
           ) : (
             noAccess
@@ -3996,6 +4081,7 @@ function AdminView({
   getSessionMembers,
   memberRoster,
   setMemberRoster,
+  orgId,
 }) {
   const [tab, setTab] = useState("today");
   const [confirmDel, setConfirmDel] = useState(false);
@@ -4010,6 +4096,7 @@ function AdminView({
             Group sessions, planning and participants
           </p>
         </div>
+        <BackupButton orgId={orgId} />
       </div>
 
       {/* Period bar */}
