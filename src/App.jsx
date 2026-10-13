@@ -17,7 +17,6 @@ import {
   Timestamp,
 } from "firebase/firestore";
 import {
-  onAuthStateChanged,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   deleteUser,
@@ -39,10 +38,7 @@ import {
   BLOCK_TEMPLATES,
   templatePatch,
   EMPTY_WOD,
-  EMPTY_PERIOD,
   nextSessionNumber,
-  DEFAULT_MEMBERS,
-  DEMO_PERIOD,
 } from "./lib/constants";
 import {
   roleLabel,
@@ -72,15 +68,10 @@ import {
   describeResults,
   describeFields,
 } from "./lib/resultFields";
-
-// Returns the stored value, or undefined when the document doesn't exist.
-// A failed read THROWS, so it can never be mistaken for "no data yet".
-const load = async (key) => {
-  const snap = await getDoc(doc(db, "riggworkout", key));
-  return snap.exists() ? snap.data().value : undefined;
-};
-// Rejects when the write fails; the caller decides how to show it
-const save = (key, val) => setDoc(doc(db, "riggworkout", key), { value: val });
+import { migrateLegacyResults } from "./lib/legacyMigration";
+import { useAuthProfile } from "./hooks/useAuthProfile";
+import { usePlanning } from "./hooks/usePlanning";
+import { useClassResults } from "./hooks/useClassResults";
 
 
 
@@ -457,179 +448,6 @@ function ResultsTable({
   );
 }
 
-// ─── Class results: one document per session ──────────────────────────────────
-// classResults/{sessionId} = { results: { "<block>|<member>": { "<variable>": "value" } },
-//                              saved:   { "<block>|<member>": true }, updatedAt }
-// Every write only touches ONE member's entry (merge), so two people logging at the same
-// time can never overwrite each other, and everyone watching sees changes live.
-function useClassResults(wodId) {
-  // The latest answer from the database, tagged with the session it belongs to. Until the
-  // answer for the CURRENT session has arrived, the hook reports empty data and ready = false.
-  const [snapState, setSnapState] = useState({
-    id: null,
-    results: {},
-    saved: {},
-    error: "", // e.g. "permission-denied" when results can't be read
-  });
-
-  useEffect(() => {
-    if (wodId === undefined || wodId === null) return;
-    const id = String(wodId);
-    const unsub = onSnapshot(
-      doc(db, "classResults", id),
-      (snap) => {
-        const d = snap.exists() ? snap.data() : {};
-        setSnapState({
-          id,
-          results: d.results || {},
-          saved: d.saved || {},
-          error: "",
-        });
-      },
-      (err) => {
-        console.error("Could not read class results:", err);
-        setSnapState((prev) => ({
-          ...(prev.id === id ? prev : { results: {}, saved: {} }),
-          id,
-          error: err?.code || "error",
-        }));
-      },
-    );
-    return unsub;
-  }, [wodId]);
-
-  const isCurrent =
-    wodId !== undefined && wodId !== null && snapState.id === String(wodId);
-  const data = isCurrent ? snapState : { results: {}, saved: {} };
-  const ready = isCurrent; // true once the first answer for this session has arrived
-  const error = isCurrent ? snapState.error : "";
-
-  const ref = () => doc(db, "classResults", String(wodId));
-  const entry = (block, member) => `${block}|${member}`;
-  return {
-    ready,
-    error,
-    get: (block, member, variable) =>
-      data.results[entry(block, member)]?.[variable] || "",
-    isSaved: (block, member) => !!data.saved[entry(block, member)],
-    getAll: (block, member) => data.results[entry(block, member)] || {},
-    // everyone who has logged anything for this session, whether or not they are on the participant list
-    entryMembers: () => {
-      const names = new Set();
-      [...Object.keys(data.results), ...Object.keys(data.saved)].forEach(
-        (k) => {
-          const i = k.indexOf("|");
-          if (i > 0) names.add(k.slice(i + 1));
-        },
-      );
-      return [...names].sort((a, b) => a.localeCompare(b, "sv"));
-    },
-    anyForBlock: (block) =>
-      Object.keys(data.results).some((k) => k.startsWith(`${block}|`)),
-    // one field (used by the admin results table)
-    setField: (block, member, variable, value) =>
-      setDoc(
-        ref(),
-        {
-          results: { [entry(block, member)]: { [variable]: value } },
-          saved: {},
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true },
-      ),
-    // a whole block for one member + mark it as done (used on Home)
-    saveBlock: (block, member, vals) => {
-      const payload = {
-        results: Object.keys(vals).length
-          ? { [entry(block, member)]: vals }
-          : {},
-        saved: { [entry(block, member)]: true },
-        updatedAt: serverTimestamp(),
-      };
-      return setDoc(ref(), payload, { merge: true });
-    },
-  };
-}
-
-// One-time move of the old single-blob results (riggworkout/cf_results + cf_saved_results)
-// into the per-session documents. Runs once, when an admin opens the app after the upgrade.
-async function migrateLegacyResults(validIds, onStart) {
-  const markerRef = doc(db, "riggworkout", "cf_migration");
-  const marker = await getDoc(markerRef);
-  if (marker.exists() && marker.data().resultsMigrated)
-    return { skipped: true, count: 0 };
-  onStart && onStart();
-
-  const [rSnap, sSnap] = await Promise.all([
-    getDoc(doc(db, "riggworkout", "cf_results")),
-    getDoc(doc(db, "riggworkout", "cf_saved_results")),
-  ]);
-  const legacyResults = rSnap.exists() ? rSnap.data().value || {} : {};
-  const legacySaved = sSnap.exists() ? sSnap.data().value || {} : {};
-
-  // legacy key = `${sessionId}_${block}_${member}` (the member name may itself contain "_")
-  const split = (key) => {
-    const i = key.indexOf("_");
-    const j = key.indexOf("_", i + 1);
-    return i < 0 || j < 0
-      ? null
-      : {
-          wod: key.slice(0, i),
-          block: key.slice(i + 1, j),
-          member: key.slice(j + 1),
-        };
-  };
-  const byWod = {};
-  const bucket = (wod) =>
-    (byWod[wod] = byWod[wod] || { results: {}, saved: {} });
-
-  Object.entries(legacyResults).forEach(([key, vals]) => {
-    const p = split(key);
-    if (!p || !validIds.has(p.wod) || !vals || typeof vals !== "object") return;
-    const clean = {};
-    Object.entries(vals).forEach(([variable, value]) => {
-      if (value !== "" && value != null) clean[variable] = String(value);
-    });
-    if (Object.keys(clean).length)
-      bucket(p.wod).results[`${p.block}|${p.member}`] = clean;
-  });
-  Object.entries(legacySaved).forEach(([key, flag]) => {
-    const p = split(key);
-    if (!p || !flag || !validIds.has(p.wod)) return;
-    bucket(p.wod).saved[`${p.block}|${p.member}`] = true;
-  });
-
-  let count = 0;
-  for (const wod of Object.keys(byWod)) {
-    const ref = doc(db, "classResults", wod);
-    const existing = await getDoc(ref);
-    const ex = existing.exists() ? existing.data() : {};
-    const results = {};
-    const saved = {};
-    // never overwrite anything that has already been logged in the new storage
-    Object.entries(byWod[wod].results).forEach(([k, v]) => {
-      if (!(ex.results && ex.results[k])) results[k] = v;
-    });
-    Object.entries(byWod[wod].saved).forEach(([k, v]) => {
-      if (!(ex.saved && ex.saved[k])) saved[k] = v;
-    });
-    if (Object.keys(results).length || Object.keys(saved).length) {
-      await setDoc(
-        ref,
-        { results, saved, updatedAt: serverTimestamp() },
-        { merge: true },
-      );
-      count++;
-    }
-  }
-  await setDoc(
-    markerRef,
-    { resultsMigrated: true, migratedAt: serverTimestamp() },
-    { merge: true },
-  );
-  return { skipped: false, count };
-}
-
 // ─── Backup (admin, read-only) ─────────────────────────────────────────────────
 // Firestore Timestamps become ISO strings so the file is plain JSON
 const toPlain = (v) => {
@@ -719,63 +537,17 @@ export default function App() {
     readInviteParam() ? "register" : "member",
   );
   const [inviteCode, setInviteCode] = useState(() => readInviteParam());
-  const registeringRef = useRef(false);
-
-  // ── Real authentication + roles ────────────────────────────────────────────
-  const [authReady, setAuthReady] = useState(false);
-  const [authUser, setAuthUser] = useState(null);
-  const [profile, setProfile] = useState(null); // {role, orgId, name, email, ...}; false = signed in but no profile found
-  const [org, setOrg] = useState(null);
-  const [profileError, setProfileError] = useState("");
-  const [profileLoading, setProfileLoading] = useState(false);
-
-  const loadProfile = async (u) => {
-    try {
-      const snap = await getDoc(doc(db, "users", u.uid));
-      if (snap.exists()) {
-        const p = snap.data();
-        setProfile(p);
-        try {
-          const o = await getDoc(doc(db, "orgs", p.orgId));
-          setOrg(o.exists() ? o.data() : null);
-        } catch {
-          setOrg(null);
-        }
-      } else {
-        setProfile(false);
-        setOrg(null);
-      }
-    } catch {
-      setProfile(false);
-      setOrg(null);
-      setProfileError(
-        "Could not load your profile. Check your connection and the Firestore rules.",
-      );
-    }
-  };
-
-  useEffect(() => {
-    const unsub = onAuthStateChanged(auth, async (u) => {
-      setAuthUser(u);
-      setProfileError("");
-      if (!u) {
-        setProfile(null);
-        setOrg(null);
-        setProfileLoading(false);
-        setAuthReady(true);
-        return;
-      }
-      if (registeringRef.current) {
-        setAuthReady(true);
-        return;
-      } // the register screen loads the profile itself when done
-      setProfileLoading(true);
-      await loadProfile(u);
-      setProfileLoading(false);
-      setAuthReady(true);
-    });
-    return unsub;
-  }, []);
+  const {
+    registeringRef,
+    authReady,
+    authUser,
+    profile,
+    org,
+    profileError,
+    profileLoading,
+    setProfileLoading,
+    loadProfile,
+  } = useAuthProfile();
 
   const finishRegistration = async () => {
     registeringRef.current = false;
@@ -808,75 +580,29 @@ export default function App() {
     }
     setView("member");
   };
-  const [periods, setPeriods] = useState([]);
-  const [activePeriodId, setActivePeriodId] = useState(DEMO_PERIOD.id);
-  const [sessionMembers, setSessionMembers] = useState({});
-  const [memberRoster, setMemberRoster] = useState([]);
-  const [planningStatus, setPlanningStatus] = useState("loading"); // loading | ready | error
-  const loaded = planningStatus === "ready";
-  const [saveFailed, setSaveFailed] = useState(false);
   const isAdminUser =
     role === "admin" && !(profile && profile.active === false);
   const [migration, setMigration] = useState(null); // {status: "running" | "done" | "error", count}
-
-  useEffect(() => {
-    (async () => {
-      try {
-        // Dev-only test hook: ?simulateLoadFailure=1 makes the planning read fail (stripped from production builds)
-        if (
-          import.meta.env.DEV &&
-          new URLSearchParams(window.location.search).get(
-            "simulateLoadFailure",
-          ) === "1"
-        )
-          throw new Error("Simulated planning load failure (dev only)");
-        const [p, sm, mr] = await Promise.all([
-          load("cf_periods"),
-          load("cf_session_members"),
-          load("cf_member_roster"),
-        ]);
-        // Demo data only when the document really doesn't exist yet (first run)
-        setPeriods(p ?? [DEMO_PERIOD]);
-        setSessionMembers(sm ?? {});
-        setMemberRoster(mr ?? DEFAULT_MEMBERS);
-        setPlanningStatus("ready");
-      } catch (err) {
-        console.error("Could not load the planning:", err);
-        setPlanningStatus("error");
-      }
-    })();
-  }, []);
-
-  // Planning is saved ONLY after an admin has changed it: the edit actions below mark their
-  // document as dirty, and this effect writes the dirty ones. Loading data, signing in or a
-  // role change never marks anything dirty, so they never trigger a write.
-  // Never call setPeriods/setSessionMembers/setMemberRoster directly for admin edits; use the edit* helpers.
-  const dirty = useRef({
-    cf_periods: false,
-    cf_session_members: false,
-    cf_member_roster: false,
-  });
-  const markDirty = (key) => {
-    dirty.current[key] = true;
-  };
-  const canSave = loaded && isAdminUser && !saveFailed;
-  useEffect(() => {
-    const current = {
-      cf_periods: periods,
-      cf_session_members: sessionMembers,
-      cf_member_roster: memberRoster,
-    };
-    Object.entries(current).forEach(([key, value]) => {
-      if (!dirty.current[key]) return;
-      dirty.current[key] = false;
-      if (!canSave) return;
-      // No silent retry: after a failed write all saving stops and the admin is told to reload
-      save(key, value).catch((err) => {
-        console.error(`Could not save ${key}:`, err);
-        setSaveFailed(true);
-      });
-    });
-  }, [periods, sessionMembers, memberRoster, canSave]);
+  const {
+    periods,
+    activePeriodId,
+    setActivePeriodId,
+    memberRoster,
+    planningStatus,
+    loaded,
+    saveFailed,
+    activePeriod,
+    allWorkouts,
+    editMemberRoster,
+    setSessionMembersForWod,
+    getSessionMembers,
+    updatePeriod,
+    addPeriod,
+    deletePeriod,
+    addWorkout,
+    updateWorkout,
+    deleteWorkout,
+  } = usePlanning(isAdminUser);
 
   // One-time move of the old results blobs into per-session documents (runs for an admin only)
   useEffect(() => {
@@ -906,89 +632,6 @@ export default function App() {
     const t = setTimeout(() => setMigration(null), 10000);
     return () => clearTimeout(t);
   }, [migration]);
-
-  const activePeriod =
-    periods.find((p) => p.id === activePeriodId) || periods[0];
-  const allWorkouts = periods.flatMap((p) => p.workouts);
-
-  // Every admin edit goes through these; each marks the document it changes as dirty
-  const editPeriods = (fn) => {
-    markDirty("cf_periods");
-    setPeriods(fn);
-  };
-  const editMemberRoster = (roster) => {
-    markDirty("cf_member_roster");
-    setMemberRoster(roster);
-  };
-  const setSessionMembersForWod = (wodId, mems) => {
-    markDirty("cf_session_members");
-    setSessionMembers((prev) => ({ ...prev, [wodId]: mems }));
-  };
-  const getSessionMembers = (wodId) => sessionMembers[wodId] || [];
-  // Removes the participant lists of deleted sessions (the one place this is done)
-  const dropSessionMembers = (wodIds) => {
-    if (!wodIds.some((id) => id in sessionMembers)) return;
-    markDirty("cf_session_members");
-    setSessionMembers((prev) => {
-      const next = { ...prev };
-      wodIds.forEach((id) => delete next[id]);
-      return next;
-    });
-  };
-
-  const updatePeriod = (id, updates) =>
-    editPeriods((prev) =>
-      prev.map((p) => (p.id === id ? { ...p, ...updates } : p)),
-    );
-  const addPeriod = () => {
-    const np = EMPTY_PERIOD();
-    editPeriods((prev) => [...prev, np]);
-    setActivePeriodId(np.id);
-  };
-  const dropClassResults = (wodId) => {
-    deleteDoc(doc(db, "classResults", String(wodId))).catch(() => {});
-  };
-  const deletePeriod = (id) => {
-    const wodIds = (periods.find((p) => p.id === id)?.workouts || []).map(
-      (w) => w.id,
-    );
-    wodIds.forEach(dropClassResults);
-    dropSessionMembers(wodIds);
-    editPeriods((prev) => {
-      const next = prev.filter((p) => p.id !== id);
-      return next.length ? next : [EMPTY_PERIOD()];
-    });
-    const rem = periods.filter((p) => p.id !== id);
-    setActivePeriodId(rem.length ? rem[0].id : null);
-  };
-  const addWorkout = (periodId, wod) =>
-    editPeriods((prev) =>
-      prev.map((p) =>
-        p.id === periodId ? { ...p, workouts: [...p.workouts, wod] } : p,
-      ),
-    );
-  const updateWorkout = (periodId, wod) =>
-    editPeriods((prev) =>
-      prev.map((p) =>
-        p.id === periodId
-          ? {
-              ...p,
-              workouts: p.workouts.map((w) => (w.id === wod.id ? wod : w)),
-            }
-          : p,
-      ),
-    );
-  const deleteWorkout = (periodId, wodId) => {
-    dropClassResults(wodId);
-    dropSessionMembers([wodId]);
-    editPeriods((prev) =>
-      prev.map((p) =>
-        p.id === periodId
-          ? { ...p, workouts: p.workouts.filter((w) => w.id !== wodId) }
-          : p,
-      ),
-    );
-  };
 
   if (planningStatus === "loading" || !authReady)
     return (
