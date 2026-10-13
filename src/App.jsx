@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import "./styles.css";
 import { db, auth } from "./firebase";
 import {
   doc,
@@ -109,150 +110,6 @@ const GrainBg = () => (
     <rect width="100%" height="100%" filter="url(#grain)" />
   </svg>
 );
-
-const css = `
-  @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800&family=Barlow:wght@400;500;600&display=swap');
-  *, *::before, *::after { box-sizing: border-box; margin:0; padding:0; }
-  body { font-family: 'Barlow', sans-serif; background: #0f0a06; color: #f0ebe3; min-height: 100vh; }
-  .app-root {
-    position: relative; min-height: 100vh;
-    background: radial-gradient(ellipse 80% 60% at 20% 10%, #4a1800 0%, transparent 55%),
-                radial-gradient(ellipse 60% 50% at 80% 80%, #2d0f00 0%, transparent 50%),
-                radial-gradient(ellipse 100% 80% at 50% 50%, #1a0800 0%, #0f0a06 100%);
-  }
-  h1,h2,h3,h4,h5 { font-family: 'Barlow Condensed', sans-serif; font-weight: 700; letter-spacing: 0.02em; }
-  .orange { color: #FF6B1A; } .muted { color: #8a7a6a; } .small { font-size:0.8rem; }
-
-  .nav {
-    position: sticky; top:0; z-index:100;
-    display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px 12px;
-    padding: 14px 24px;
-    background: rgba(15,10,6,0.88); backdrop-filter: blur(12px);
-    border-bottom: 1px solid rgba(255,107,26,0.15);
-  }
-  .nav-logo { font-family:'Barlow Condensed',sans-serif; font-size:1.5rem; font-weight:800; letter-spacing:0.08em; color:#FF6B1A; white-space:nowrap; }
-  .nav-tabs { display:flex; gap:4px; flex-shrink:0; }
-  .nav-tab {
-    padding: 7px 18px; border-radius:6px; border:none; cursor:pointer;
-    font-family:'Barlow',sans-serif; font-size:0.85rem; font-weight:600;
-    background: transparent; color: #8a7a6a; transition: all 0.2s; white-space:nowrap;
-  }
-  .nav-account { display:flex; align-items:center; gap:8px; }
-  .nav-user { font-size:0.78rem; color:#8a7a6a; white-space:nowrap; max-width:160px; overflow:hidden; text-overflow:ellipsis; }
-  .role-badge { display:inline-flex; padding:2px 9px; border-radius:20px; background:rgba(255,107,26,0.12); color:#FF6B1A; font-size:0.7rem; font-weight:700; letter-spacing:0.05em; text-transform:uppercase; }
-  .nav-tab.active { background: rgba(255,107,26,0.15); color:#FF6B1A; }
-  .nav-tab:hover:not(.active) { color:#f0ebe3; background:rgba(255,255,255,0.05); }
-
-  .card { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.07); border-radius: 12px; padding: 20px; backdrop-filter: blur(4px); }
-  .card-orange { border-color: rgba(255,107,26,0.3); background: rgba(255,107,26,0.06); }
-
-  input, textarea, select {
-    width:100%; padding:9px 12px; border-radius:7px;
-    border:1px solid rgba(255,255,255,0.12);
-    background:rgba(255,255,255,0.06); color:#f0ebe3;
-    font-family:'Barlow',sans-serif; font-size:0.9rem; transition: border 0.2s; outline:none;
-  }
-  input:focus, textarea:focus, select:focus { border-color:rgba(255,107,26,0.5); }
-  textarea { resize:vertical; min-height:80px; }
-  select option { background:#1a1008; }
-  label { font-size:0.78rem; font-weight:600; color:#8a7a6a; text-transform:uppercase; letter-spacing:0.06em; display:block; margin-bottom:5px; }
-
-  .btn {
-    display:inline-flex; align-items:center; gap:6px;
-    padding:9px 18px; border-radius:7px; border:none; cursor:pointer;
-    font-family:'Barlow',sans-serif; font-size:0.875rem; font-weight:600;
-    transition: all 0.18s; text-decoration:none;
-  }
-  .btn-primary { background:#FF6B1A; color:#fff; }
-  .btn-primary:hover { background:#e55c0e; transform:translateY(-1px); }
-  .btn-ghost { background:rgba(255,255,255,0.07); color:#f0ebe3; }
-  .btn-ghost:hover { background:rgba(255,255,255,0.12); }
-  .btn-danger { background:rgba(220,50,50,0.15); color:#ff7070; border:1px solid rgba(220,50,50,0.2); }
-  .btn-danger:hover { background:rgba(220,50,50,0.25); }
-  .btn-sm { padding:5px 12px; font-size:0.8rem; }
-  .btn-xs { padding:3px 9px; font-size:0.75rem; border-radius:5px; }
-
-  .grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
-  .grid-3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:16px; }
-  .flex { display:flex; } .flex-center { display:flex; align-items:center; }
-  .flex-between { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; }
-  .flex-wrap { flex-wrap:wrap; }
-  .gap-2{gap:8px;} .gap-3{gap:12px;} .gap-4{gap:16px;}
-  .col{flex-direction:column;}
-  .mt-1{margin-top:4px;} .mt-2{margin-top:8px;} .mt-3{margin-top:12px;} .mt-4{margin-top:16px;} .mt-6{margin-top:24px;}
-  .mb-2{margin-bottom:8px;} .mb-3{margin-bottom:12px;} .mb-4{margin-bottom:16px;} .mb-6{margin-bottom:24px;}
-  .w-full{width:100%;} .text-center{text-align:center;}
-
-  .block-badge {
-    display:inline-flex; align-items:center; justify-content:center;
-    width:28px; height:28px; border-radius:6px;
-    font-family:'Barlow Condensed',sans-serif; font-weight:800; font-size:1rem; flex-shrink:0;
-  }
-  .session-tag {
-    display:inline-flex; align-items:center; gap:5px; padding:3px 10px; border-radius:20px;
-    background:rgba(255,107,26,0.12); color:#FF6B1A; font-size:0.78rem; font-weight:600; letter-spacing:0.04em;
-  }
-
-  .results-table { width:100%; border-collapse:collapse; }
-  .results-table th { padding:8px 10px; text-align:left; font-size:0.72rem; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; color:#8a7a6a; border-bottom:1px solid rgba(255,255,255,0.08); }
-  .results-table td { padding:6px 10px; border-bottom:1px solid rgba(255,255,255,0.04); }
-  .results-table tr:hover td { background:rgba(255,255,255,0.02); }
-  .results-table input { padding:5px 8px; font-size:0.85rem; }
-
-  .cal-grid { display:grid; grid-template-columns:repeat(7,1fr); gap:2px; }
-  .cal-day { aspect-ratio:1; display:flex; flex-direction:column; align-items:center; justify-content:center; border-radius:6px; cursor:pointer; font-size:0.78rem; font-weight:600; transition:all 0.15s; }
-  .cal-day:hover { background:rgba(255,255,255,0.07); }
-  .cal-day.has-wod { background:rgba(255,107,26,0.12); color:#FF6B1A; }
-  .cal-day.is-today { background:rgba(255,107,26,0.25); color:#FF6B1A; font-weight:800; }
-  .cal-day.is-selected { outline:2px solid #FF6B1A; }
-  .cal-day.other-month { opacity:0.3; }
-  .cal-dot { width:4px; height:4px; border-radius:50%; background:#FF6B1A; margin-top:2px; }
-
-  .wod-nav-btn { padding:8px 14px; border-radius:8px; border:none; cursor:pointer; background:rgba(255,255,255,0.07); color:#f0ebe3; font-size:1rem; transition:all 0.15s; flex-shrink:0; }
-  .wod-nav-btn:hover:not(:disabled) { background:rgba(255,107,26,0.2); color:#FF6B1A; }
-  .wod-nav-btn:disabled { opacity:0.25; cursor:default; }
-
-  .login-wrap { min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }
-  .login-card { width:100%; max-width:380px; background:rgba(255,255,255,0.04); border:1px solid rgba(255,107,26,0.2); border-radius:16px; padding:40px 32px; backdrop-filter:blur(8px); }
-
-  .member-pill { display:inline-flex; align-items:center; gap:6px; padding:5px 12px; border-radius:20px; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.1); font-size:0.82rem; cursor:pointer; transition:all 0.15s; }
-  .member-pill.active { background:rgba(255,107,26,0.15); border-color:rgba(255,107,26,0.35); color:#FF6B1A; }
-  .member-pill:hover:not(.active):not(:disabled) { border-color:rgba(255,255,255,0.2); }
-
-  .page { max-width:1100px; margin:0 auto; padding:24px 20px 60px; position:relative; z-index:1; }
-  .section-header { display:flex; align-items:center; gap:10px; margin-bottom:16px; }
-  .section-line { flex:1; height:1px; background:rgba(255,255,255,0.07); }
-  .period-list { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:20px; }
-  .period-pill { padding:6px 14px; border-radius:20px; border:1px solid rgba(255,255,255,0.1); background:transparent; color:#8a7a6a; font-size:0.82rem; font-weight:600; cursor:pointer; transition:all 0.15s; }
-  .period-pill.active { background:rgba(255,107,26,0.15); border-color:rgba(255,107,26,0.3); color:#FF6B1A; }
-  ::-webkit-scrollbar { width:6px; height:6px; }
-  ::-webkit-scrollbar-track { background:transparent; }
-  ::-webkit-scrollbar-thumb { background:rgba(255,107,26,0.3); border-radius:3px; }
-  .check-var { display:flex; align-items:center; gap:7px; cursor:pointer; font-size:0.83rem; padding:4px 0; }
-  .check-var input[type=checkbox] { width:auto; cursor:pointer; accent-color:#FF6B1A; }
-  .week-day-card { background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.07); border-radius:10px; padding:14px; min-height:120px; cursor:pointer; transition:all 0.15s; }
-  .week-day-card:hover { border-color:rgba(255,107,26,0.25); background:rgba(255,107,26,0.04); }
-  .week-day-card.today-card { border-color:rgba(255,107,26,0.4); background:rgba(255,107,26,0.08); }
-  .week-day-card.has-wod-card { border-color:rgba(255,107,26,0.2); }
-  .admin-tabs { display:flex; border-bottom:1px solid rgba(255,255,255,0.07); margin-bottom:24px; flex-wrap:wrap; }
-  .admin-tab { padding:10px 20px; border:none; background:transparent; color:#8a7a6a; font-family:'Barlow',sans-serif; font-size:0.87rem; font-weight:600; cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px; transition:all 0.15s; }
-  .admin-tab.active { color:#FF6B1A; border-bottom-color:#FF6B1A; }
-  .modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.75); z-index:200; display:flex; align-items:center; justify-content:center; padding:20px; }
-  .modal-inner { background:#1a0f07; border:1px solid rgba(255,107,26,0.3); border-radius:14px; width:100%; max-width:620px; max-height:85vh; display:flex; flex-direction:column; overflow:hidden; }
-  .modal-header { flex-shrink:0; padding:20px 28px 16px; border-bottom:1px solid rgba(255,255,255,0.08); }
-  .modal-body { flex:1; overflow-y:auto; padding:18px 28px 28px; }
-  @media(max-width:640px){
-    .grid-2,.grid-3 { grid-template-columns:1fr; }
-    .admin-tab { padding:8px 12px; font-size:0.8rem; }
-  }
-  @media(max-width:560px){
-    .nav { padding:10px 14px; }
-    .nav-logo { font-size:1.1rem; }
-    .nav-tabs { order:3; width:100%; justify-content:center; gap:4px; }
-    .nav-tab { padding:7px 14px; font-size:0.8rem; }
-    .nav-user { display:none; }
-  }
-`;
 
 
 
@@ -1186,7 +1043,6 @@ export default function App() {
 
   return (
     <>
-      <style>{css}</style>
       <div className="app-root">
         <GrainBg />
         <nav className="nav">
