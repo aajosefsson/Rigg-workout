@@ -23,6 +23,54 @@ import {
   signOut,
   sendPasswordResetEmail,
 } from "firebase/auth";
+import {
+  DAYS,
+  MONTHS,
+  todayStr,
+  formatDate,
+  getMondayOfWeek,
+  addDays,
+  getWeekDates,
+} from "./lib/dates";
+import {
+  BLOCK_COLORS,
+  RESULT_VARS,
+  BLOCK_TEMPLATES,
+  templatePatch,
+  EMPTY_WOD,
+  EMPTY_PERIOD,
+  nextSessionNumber,
+  DEFAULT_MEMBERS,
+  DEMO_PERIOD,
+} from "./lib/constants";
+import {
+  roleLabel,
+  readInviteParam,
+  normCode,
+  makeCode,
+  prettyCode,
+  looksLikeEmail,
+  inviteMailto,
+} from "./lib/invites";
+import {
+  PER_SET_ORDER,
+  SET_SHORT,
+  blockSets,
+  exercisesOf,
+  isDetailed,
+  perSetVarsOf,
+  singleVarsOf,
+  entryKey,
+  setNumbers,
+  exerciseGroups,
+  cleanBlock,
+  fieldList,
+  fieldKeys,
+  resultColumns,
+  orphanEntries,
+  describeResults,
+  describeFields,
+} from "./lib/resultFields";
 
 // Returns the stored value, or undefined when the document doesn't exist.
 // A failed read THROWS, so it can never be mistaken for "no data yet".
@@ -33,119 +81,7 @@ const load = async (key) => {
 // Rejects when the write fails; the caller decides how to show it
 const save = (key, val) => setDoc(doc(db, "riggworkout", key), { value: val });
 
-const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-const MONTHS = [
-  "January",
-  "February",
-  "March",
-  "April",
-  "May",
-  "June",
-  "July",
-  "August",
-  "September",
-  "October",
-  "November",
-  "December",
-];
-const BLOCK_COLORS = { A: "#FF6B1A", B: "#FF9A4D", C: "#FFB87A", D: "#FFCFA0" };
-const RESULT_VARS = [
-  "Time",
-  "Rounds",
-  "Reps",
-  "Weight (kg)",
-  "Distance (m)",
-  "Comment",
-];
-const BLOCK_TEMPLATES = {
-  "For Time": {
-    description: "For Time:\n21-15-9\n[Movement 1]\n[Movement 2]",
-    variables: ["Time", "Comment"],
-  },
-  AMRAP: {
-    description:
-      "AMRAP 12:\n[Movement 1] x10\n[Movement 2] x10\n[Movement 3] x10",
-    variables: ["Rounds", "Reps", "Comment"],
-  },
-  EMOM: {
-    description: "EMOM 10:\nOdd minutes: [Movement]\nEven minutes: [Movement]",
-    variables: ["Reps", "Weight (kg)", "Comment"],
-  },
-  Strength: {
-    description: "[Exercise]\n5 sets x 5 reps\nRest 2-3 min between sets",
-    variables: ["Weight (kg)", "Reps", "Comment"],
-    sets: 5,
-  },
-};
-// A template always sets the block's number of sets too (1 = log everything once)
-const templatePatch = (name) => ({
-  description: BLOCK_TEMPLATES[name].description,
-  variables: BLOCK_TEMPLATES[name].variables,
-  sets: BLOCK_TEMPLATES[name].sets || 1,
-});
-const EMPTY_BLOCK = () => ({
-  name: "A",
-  description: "",
-  variables: ["Rounds", "Weight (kg)"],
-});
-const EMPTY_WOD = () => ({
-  id: Date.now(),
-  title: "",
-  sessionNumber: 1,
-  blocks: [EMPTY_BLOCK()],
-  date: todayStr(),
-});
-const EMPTY_PERIOD = () => ({
-  id: Date.now(),
-  name: "",
-  focus: "",
-  startDate: todayStr(),
-  durationWeeks: 8,
-  workouts: [],
-});
-// Next free session number in a period (values that aren't numbers are ignored)
-const nextSessionNumber = (workouts) => {
-  const nums = workouts.map((w) => w.sessionNumber).filter(Number.isFinite);
-  return nums.length ? Math.max(...nums) + 1 : 1;
-};
-const DEFAULT_MEMBERS = [
-  "Erik",
-  "Sofia",
-  "Marcus",
-  "Linnea",
-  "Johan",
-  "Emma",
-  "Andreas",
-  "Maja",
-  "David",
-  "Sara",
-  "Tobias",
-  "Klara",
-];
 
-function todayStr() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-function formatDate(str) {
-  if (!str) return "";
-  const d = new Date(str + "T12:00:00");
-  return `${DAYS[d.getDay() == 0 ? 6 : d.getDay() - 1]} ${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
-}
-function getMondayOfWeek(dateStr) {
-  const d = new Date(dateStr + "T12:00:00");
-  const day = d.getDay() === 0 ? 6 : d.getDay() - 1;
-  d.setDate(d.getDate() - day);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-function addDays(dateStr, n) {
-  const d = new Date(dateStr + "T12:00:00");
-  d.setDate(d.getDate() + n);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-function getWeekDates(mondayStr) {
-  return Array.from({ length: 7 }, (_, i) => addDays(mondayStr, i));
-}
 
 const GrainBg = () => (
   <svg
@@ -318,253 +254,8 @@ const css = `
   }
 `;
 
-const DEMO_PERIOD = {
-  id: 1700000000000,
-  name: "Spring Strength Block",
-  focus: "Back Squat & Gymnastics",
-  startDate: todayStr(),
-  durationWeeks: 8,
-  workouts: [
-    {
-      id: 1700000001000,
-      title: "Heavy Squats + MetCon",
-      sessionNumber: 1,
-      date: todayStr(),
-      blocks: [
-        {
-          name: "A",
-          description: "Back Squat\n5x5 @ 80%\nRest 3 min between sets",
-          variables: ["Weight (kg)", "Comment"],
-        },
-        {
-          name: "B",
-          description: "For Time:\n21-15-9\nThrusters (42.5/30kg)\nPull-ups",
-          variables: ["Time", "Comment"],
-        },
-      ],
-    },
-  ],
-};
 
-// ─── Invite helpers ────────────────────────────────────────────────────────────
-const roleLabel = (r) => (r === "member" ? "client" : r);
-const readInviteParam = () => {
-  try {
-    return new URLSearchParams(window.location.search).get("invite") || "";
-  } catch {
-    return "";
-  }
-};
-const normCode = (c) => (c || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-const makeCode = () => {
-  const chars = "abcdefghijkmnpqrstuvwxyz23456789"; // 32 symbols, no look-alikes (l, o, 0, 1)
-  const bytes = new Uint8Array(20);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, (b) => chars[b % chars.length]).join("");
-};
-const prettyCode = (c) => (c.match(/.{1,5}/g) || []).join("-");
-const looksLikeEmail = (e) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
-// Opens the coach's own mail app with the invitation already written (sent from their address)
-const inviteMailto = ({
-  email,
-  firstName,
-  orgName,
-  inviterName,
-  role,
-  link,
-}) => {
-  const subject = `Din inbjudan till ${orgName}`;
-  const body =
-    `Hej ${firstName || ""}!\n\n${inviterName} har bjudit in dig till ${orgName} som ${role === "member" ? "klient" : "coach"}.\n\n` +
-    `Skapa ditt konto här (länken gäller i 7 dagar och kan bara användas en gång):\n${link}\n\n` +
-    `Du väljer ett eget lösenord när du registrerar dig. Använd samma e-postadress som det här mejlet skickades till.\n\nVälkommen!\n${inviterName}`;
-  return `mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-};
 
-// ─── Detailed result fields ────────────────────────────────────────────────────
-// Some fields are asked once per block ("Rounds", "Comment"). Weight, reps, time and distance
-// can be asked per SET (block.sets > 1), per EXERCISE (block.exercises = ["Squat", ...]), or both.
-// Stored under keys like "Weight (kg)", "Weight (kg)#2" (set 2), "Weight (kg)@3" (exercise 3)
-// and "Weight (kg)#2@3" (set 2 of exercise 3).
-const PER_SET_ORDER = ["Weight (kg)", "Reps", "Time", "Distance (m)"];
-const SET_SHORT = {
-  "Weight (kg)": "kg",
-  Reps: "reps",
-  Time: "time",
-  "Distance (m)": "m",
-};
-const blockSets = (block) =>
-  Math.max(1, Math.min(10, Number(block?.sets) || 1));
-const exercisesOf = (block) =>
-  Array.isArray(block?.exercises)
-    ? block.exercises
-        .map((e) => (typeof e === "string" ? e.trim() : ""))
-        .filter(Boolean)
-    : [];
-const isDetailed = (block) =>
-  blockSets(block) > 1 || exercisesOf(block).length > 0;
-const perSetVarsOf = (block) =>
-  isDetailed(block)
-    ? PER_SET_ORDER.filter((v) => (block.variables || []).includes(v))
-    : [];
-const singleVarsOf = (block) =>
-  (block.variables || []).filter((v) => !perSetVarsOf(block).includes(v));
-const entryKey = (v, setNo, exNo) =>
-  `${v}${setNo ? `#${setNo}` : ""}${exNo ? `@${exNo}` : ""}`;
-const shortName = (v) => v.replace(/ \(.*\)/, "").toLowerCase();
-const setNumbers = (block) =>
-  blockSets(block) > 1
-    ? Array.from({ length: blockSets(block) }, (_, i) => i + 1)
-    : [0];
-const exerciseGroups = (block) => {
-  const ex = exercisesOf(block);
-  return ex.length
-    ? ex.map((name, i) => ({ name, no: i + 1 }))
-    : [{ name: "", no: 0 }];
-};
-const cleanBlock = (b) => ({ ...b, exercises: exercisesOf(b) }); // run when a session is saved: no empty names
-
-// Every input a member fills in for a block, in order, with a readable label
-const fieldList = (block) => {
-  const per = perSetVarsOf(block),
-    out = [];
-  if (per.length)
-    exerciseGroups(block).forEach((g) =>
-      setNumbers(block).forEach((sn) =>
-        per.forEach((v) =>
-          out.push({
-            key: entryKey(v, sn, g.no),
-            label: [g.name, sn ? `Set ${sn}` : "", v]
-              .filter(Boolean)
-              .join(" · "),
-          }),
-        ),
-      ),
-    );
-  singleVarsOf(block).forEach((v) => out.push({ key: v, label: v }));
-  return out;
-};
-const fieldKeys = (block) => fieldList(block).map((f) => f.key);
-
-// "90 kg · 5 reps" for one set of one exercise
-const formatCell = (per, setNo, exNo, get) => {
-  const parts = [];
-  per.forEach((v) => {
-    const val = String(get(entryKey(v, setNo, exNo)) || "").trim();
-    if (!val) return;
-    parts.push(
-      v === "Weight (kg)"
-        ? `${val} kg`
-        : v === "Reps"
-          ? `${val} reps`
-          : v === "Distance (m)"
-            ? `${val} m`
-            : val,
-    );
-  });
-  return parts.join(" · ");
-};
-
-// Columns for a read-only results table
-const resultColumns = (block) => {
-  const per = perSetVarsOf(block),
-    exs = exercisesOf(block),
-    cols = [];
-  if (per.length && exs.length) {
-    exs.forEach((name, i) =>
-      cols.push({
-        label: name,
-        cell: (get) =>
-          setNumbers(block)
-            .map((sn) => {
-              const t = formatCell(per, sn, i + 1, get);
-              return t ? (sn ? `S${sn}: ${t}` : t) : "";
-            })
-            .filter(Boolean)
-            .join("\n"),
-      }),
-    );
-  } else if (per.length) {
-    setNumbers(block).forEach((sn) =>
-      cols.push({
-        label: `Set ${sn}`,
-        cell: (get) => formatCell(per, sn, 0, get),
-      }),
-    );
-  }
-  if (per.length)
-    singleVarsOf(block).forEach((v) =>
-      cols.push({ label: v, cell: (get) => get(v) }),
-    );
-  else
-    (block.variables || []).forEach((v) =>
-      cols.push({ label: v, cell: (get) => get(v) }),
-    );
-  return cols;
-};
-
-// Values that were logged under a different setup than the block has now (so nothing is ever hidden)
-const orphanEntries = (block, all) => {
-  const known = new Set(fieldKeys(block));
-  return Object.entries(all || {}).filter(
-    ([k, v]) => !known.has(k) && String(v ?? "").trim(),
-  );
-};
-
-// One line of text for the coach, e.g. "Squat: S1 90 kg · 5 reps / S2 100 kg · 5 reps · Comment: heavy"
-const describeResults = (block, get, all) => {
-  const per = perSetVarsOf(block),
-    exs = exercisesOf(block),
-    out = [];
-  if (per.length && exs.length) {
-    exs.forEach((name, i) => {
-      const t = setNumbers(block)
-        .map((sn) => {
-          const c = formatCell(per, sn, i + 1, get);
-          return c ? (sn ? `S${sn} ${c}` : c) : "";
-        })
-        .filter(Boolean)
-        .join(" / ");
-      if (t) out.push(`${name}: ${t}`);
-    });
-  } else if (per.length) {
-    setNumbers(block).forEach((sn) => {
-      const t = formatCell(per, sn, 0, get);
-      if (t) out.push(`Set ${sn}: ${t}`);
-    });
-  }
-  singleVarsOf(block).forEach((v) => {
-    const t = String(get(v) || "").trim();
-    if (t) out.push(`${v}: ${t}`);
-  });
-  const other = orphanEntries(block, all);
-  if (other.length)
-    out.push(
-      `Logged under an earlier setup: ${other.map(([k, v]) => `${k} ${v}`).join(", ")}`,
-    );
-  return out.join(" · ");
-};
-
-// What the coach is asking members to fill in, in plain words
-const describeFields = (block) => {
-  const per = perSetVarsOf(block),
-    singles = singleVarsOf(block),
-    exs = exercisesOf(block),
-    sets = blockSets(block),
-    parts = [];
-  if (per.length) {
-    const what = per.map(shortName).join(" and ");
-    parts.push(
-      exs.length
-        ? `${what} for each of ${exs.length} exercise${exs.length !== 1 ? "s" : ""}${sets > 1 ? `, ${sets} sets each` : ""}`
-        : `${what} for each of ${sets} sets`,
-    );
-  }
-  if (singles.length) parts.push(`${singles.map(shortName).join(", ")} once`);
-  return parts.length
-    ? `Members log: ${parts.join(", then ")}.`
-    : "No result fields chosen. Members just mark the block as done.";
-};
 
 // Coach side: which fields to ask for, per set and/or per exercise
 function ResultFieldsEditor({ block, onChange, hasResults }) {
