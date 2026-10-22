@@ -3,6 +3,8 @@ import { TodayAdmin } from "./TodayAdmin";
 import { MembersAdmin } from "./MembersAdmin";
 import { PlannerAdmin } from "./PlannerAdmin";
 import { HistoryAdmin } from "./HistoryAdmin";
+import { ExerciseLibraryAdmin } from "./ExerciseLibraryAdmin";
+import { useExerciseLibrary } from "../../hooks/useExerciseLibrary";
 import { todayStr, formatDate, addDays } from "../../lib/dates";
 import { BackupButton } from "../../components/BackupButton";
 
@@ -26,6 +28,7 @@ export function AdminView({
   profile,
   authUser,
 }) {
+  const library = useExerciseLibrary();
   const allWorkouts = periods.flatMap((p) => p.workouts || []);
   const [tab, setTab] = useState("today");
   const [confirmDel, setConfirmDel] = useState(false);
@@ -187,6 +190,7 @@ export function AdminView({
           ["planner", "Week Planner"],
           ["members", "Members"],
           ["history", "History"],
+          ["library", "Exercises"],
         ].map(([k, l]) => (
           <button
             key={k}
@@ -229,6 +233,7 @@ export function AdminView({
           allWorkouts={allWorkouts}
         />
       )}
+      {tab === "library" && <ExerciseLibraryAdmin library={library} />}
       {tab === "history" && (
         <HistoryAdmin periods={periods} getSessionMembers={getSessionMembers} />
       )}

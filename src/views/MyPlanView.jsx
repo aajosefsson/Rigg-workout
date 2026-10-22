@@ -19,10 +19,12 @@ import {
   addDays,
   getWeekDates,
 } from "../lib/dates";
-import { fieldKeys, describeFields } from "../lib/resultFields";
+import { fieldKeys, describeFields, exercisesOf } from "../lib/resultFields";
 import { ResultInputs } from "../components/ResultInputs";
 import { SectionTitle } from "../components/SectionTitle";
 import { ProgressPanel } from "../components/ProgressPanel";
+import { ExerciseVideos } from "../components/ExerciseVideos";
+import { useExerciseLibrary } from "../hooks/useExerciseLibrary";
 import { entriesFromWorkouts } from "../lib/progress";
 
 // ─── MY PLAN (a client's own sessions and results) ─────────────────────────────
@@ -38,6 +40,7 @@ export function MyPlanView({ profile, authUser, org }) {
   const [drafts, setDrafts] = useState({}); // `${sessionId}_${block}` -> {variable: value}
   const [savingKey, setSavingKey] = useState(null);
   const [saveErr, setSaveErr] = useState("");
+  const library = useExerciseLibrary();
   const [showProgress, setShowProgress] = useState(false);
   const blockRefs = useRef([]);
   const jumped = useRef(false);
@@ -430,6 +433,10 @@ export function MyPlanView({ profile, authUser, org }) {
                 >
                   {block.description}
                 </pre>
+                <ExerciseVideos
+                  exercises={exercisesOf(block)}
+                  videoFor={library.videoFor}
+                />
 
                 <div style={{ marginLeft: "40px", marginTop: "12px" }}>
                   {saved && !open ? (

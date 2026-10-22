@@ -9,15 +9,18 @@ import {
   addDays,
   getWeekDates,
 } from "../lib/dates";
-import { fieldKeys, describeFields } from "../lib/resultFields";
+import { fieldKeys, describeFields, exercisesOf } from "../lib/resultFields";
 import { useClassResults } from "../hooks/useClassResults";
 import { ResultInputs } from "../components/ResultInputs";
 import { ResultsTable } from "../components/ResultsTable";
 import { ClassProgress } from "../components/ClassProgress";
+import { ExerciseVideos } from "../components/ExerciseVideos";
+import { useExerciseLibrary } from "../hooks/useExerciseLibrary";
 
 // ─── MEMBER VIEW ───────────────────────────────────────────────────────────────
 export function MemberView({ allWorkouts, periods, getSessionMembers, memberRoster }) {
   const today = todayStr();
+  const library = useExerciseLibrary();
   const todayMonday = getMondayOfWeek(today);
   const [weekOffset, setWeekOffset] = useState(0);
   const [selectedDate, setSelectedDate] = useState(today);
@@ -460,6 +463,10 @@ export function MemberView({ allWorkouts, periods, getSessionMembers, memberRost
                 >
                   {block.description}
                 </pre>
+                <ExerciseVideos
+                  exercises={exercisesOf(block)}
+                  videoFor={library.videoFor}
+                />
 
                 {memberName && (
                   <div style={{ marginLeft: "40px", marginTop: "12px" }}>
