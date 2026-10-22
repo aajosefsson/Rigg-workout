@@ -23,7 +23,10 @@ export function AdminView({
   memberRoster,
   editMemberRoster,
   orgId,
+  profile,
+  authUser,
 }) {
+  const allWorkouts = periods.flatMap((p) => p.workouts || []);
   const [tab, setTab] = useState("today");
   const [confirmDel, setConfirmDel] = useState(false);
   const [periodExpanded, setPeriodExpanded] = useState(false);
@@ -215,12 +218,15 @@ export function AdminView({
           memberRoster={memberRoster}
           getSessionMembers={getSessionMembers}
           setSessionMembersForWod={setSessionMembersForWod}
+          profile={profile}
+          authUser={authUser}
         />
       )}
       {tab === "members" && (
         <MembersAdmin
           memberRoster={memberRoster}
           editMemberRoster={editMemberRoster}
+          allWorkouts={allWorkouts}
         />
       )}
       {tab === "history" && (

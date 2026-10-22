@@ -334,6 +334,8 @@ export default function App() {
               memberRoster={memberRoster}
               editMemberRoster={editMemberRoster}
               orgId={profile.orgId}
+              profile={profile}
+              authUser={authUser}
             />
           ))}
         {current === "clients" &&
@@ -352,4 +354,4 @@ export default function App() {
     </>
   );
 }
-
+

@@ -338,6 +338,9 @@ export function ClientsView({ profile, authUser, org }) {
         profile={profile}
         authUser={authUser}
         coachName={nameOf(openClient.coachId)}
+        allClients={activeClients.filter(
+          (c) => myRole === "admin" || c.coachId === uid,
+        )}
         onBack={() => setOpenClientId(null)}
       />
     );

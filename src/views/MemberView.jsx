@@ -13,6 +13,7 @@ import { fieldKeys, describeFields } from "../lib/resultFields";
 import { useClassResults } from "../hooks/useClassResults";
 import { ResultInputs } from "../components/ResultInputs";
 import { ResultsTable } from "../components/ResultsTable";
+import { ClassProgress } from "../components/ClassProgress";
 
 // ─── MEMBER VIEW ───────────────────────────────────────────────────────────────
 export function MemberView({ allWorkouts, periods, getSessionMembers, memberRoster }) {
@@ -75,6 +76,7 @@ export function MemberView({ allWorkouts, periods, getSessionMembers, memberRost
   const cr = useClassResults(wod?.id);
   const [drafts, setDrafts] = useState({}); // block name -> {variable: value} typed by the selected member
   const [saveErr, setSaveErr] = useState("");
+  const [showProgress, setShowProgress] = useState(false);
   useEffect(() => {
     setDrafts({});
     setSaveErr("");
@@ -646,6 +648,45 @@ export function MemberView({ allWorkouts, periods, getSessionMembers, memberRost
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Progress for the selected member */}
+      {memberName && (
+        <div className="card mb-4">
+          <div className="flex-between">
+            <div>
+              <div
+                style={{
+                  fontSize: "0.75rem",
+                  color: "#8a7a6a",
+                  fontWeight: 700,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.06em",
+                }}
+              >
+                My progress
+              </div>
+              <div style={{ fontWeight: 600, fontSize: "0.95rem" }}>
+                {memberName}
+              </div>
+            </div>
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={() => setShowProgress((v) => !v)}
+            >
+              {showProgress ? "Hide" : "Show"}
+            </button>
+          </div>
+          {showProgress && (
+            <div className="mt-3">
+              <ClassProgress
+                key={memberName}
+                member={memberName}
+                allWorkouts={allWorkouts}
+              />
+            </div>
+          )}
         </div>
       )}
 

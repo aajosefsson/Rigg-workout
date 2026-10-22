@@ -17,6 +17,7 @@ import {
 } from "../../lib/dates";
 import { cleanBlock } from "../../lib/resultFields";
 import { ResultFieldsEditor } from "../../components/ResultFieldsEditor";
+import { TemplateBar } from "../../components/TemplateBar";
 
 // ─── PLANNER ADMIN ─────────────────────────────────────────────────────────────
 export function PlannerAdmin({
@@ -27,6 +28,8 @@ export function PlannerAdmin({
   memberRoster,
   getSessionMembers,
   setSessionMembersForWod,
+  profile,
+  authUser,
 }) {
   const today = todayStr();
   const periodMonday = getMondayOfWeek(period.startDate || today);
@@ -43,6 +46,8 @@ export function PlannerAdmin({
   const [editWod, setEditWod] = useState(null);
   const [modalTab, setModalTab] = useState("wod"); // "wod" | "participants"
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [copyDate, setCopyDate] = useState("");
+  const [copyMsg, setCopyMsg] = useState("");
   const [draftMems, setDraftMems] = useState([]); // participants of a session that isn't saved yet
 
   const weekStart = addDays(periodMonday, weekOffset * 7);
@@ -73,6 +78,8 @@ export function PlannerAdmin({
       });
     }
     setDraftMems([]);
+    setCopyDate("");
+    setCopyMsg("");
   };
   const saveWod = () => {
     const exists = period.workouts.some((w) => w.id === editWod.id);
@@ -85,6 +92,35 @@ export function PlannerAdmin({
     setSelDate(null);
     setEditWod(null);
   };
+  // Copy this session (without results or participants) to another day, as a new session
+  const copyWod = () => {
+    setCopyMsg("");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(copyDate || "")) {
+      setCopyMsg("Pick a date to copy to.");
+      return;
+    }
+    if (editWod.blocks.some((b) => !String(b.description || "").trim())) {
+      setCopyMsg("Every block needs a description before it can be copied.");
+      return;
+    }
+    if (wodsForDate(copyDate).length >= 2) {
+      setCopyMsg("That day already has 2 sessions.");
+      return;
+    }
+    const blocks = editWod.blocks.map((b) => ({
+      ...cleanBlock(b),
+      variables: [...(b.variables || [])],
+    }));
+    addWorkout(period.id, {
+      ...editWod,
+      blocks,
+      id: Date.now(),
+      date: copyDate,
+      sessionNumber: nextSessionNumber(period.workouts),
+    });
+    setCopyMsg(`Copied to ${formatDate(copyDate)}.`);
+  };
+
   const deleteDay = () => {
     const ex = period.workouts.find((w) => w.id === editWod.id);
     if (ex && !confirmDelete) {
@@ -467,6 +503,63 @@ export function PlannerAdmin({
               {/* WoD tab */}
               {modalTab === "wod" && (
                 <>
+                  {profile && authUser && (
+                    <TemplateBar
+                      profile={profile}
+                      authUser={authUser}
+                      allowApply={!isSavedWod}
+                      getCurrent={() => ({
+                        title: editWod.title,
+                        blocks: editWod.blocks,
+                      })}
+                      onApply={(t) =>
+                        setEditWod((p) => ({
+                          ...p,
+                          title: p.title || t.title,
+                          blocks: t.blocks,
+                        }))
+                      }
+                    />
+                  )}
+                  {isSavedWod && (
+                    <div className="card mb-3" style={{ padding: "12px 14px" }}>
+                      <div
+                        className="muted small"
+                        style={{
+                          marginBottom: "8px",
+                          fontWeight: 700,
+                          textTransform: "uppercase",
+                          letterSpacing: "0.06em",
+                        }}
+                      >
+                        Copy this session
+                      </div>
+                      <div
+                        className="flex gap-2"
+                        style={{ flexWrap: "wrap", alignItems: "center" }}
+                      >
+                        <input
+                          type="date"
+                          aria-label="Copy to date"
+                          value={copyDate}
+                          onChange={(e) => setCopyDate(e.target.value)}
+                          style={{ width: "auto" }}
+                        />
+                        <button
+                          type="button"
+                          className="btn btn-primary btn-sm"
+                          onClick={copyWod}
+                        >
+                          Copy to this day
+                        </button>
+                      </div>
+                      {copyMsg && (
+                        <p className="small mt-2" style={{ color: "#c8bfb0" }}>
+                          {copyMsg}
+                        </p>
+                      )}
+                    </div>
+                  )}
                   <div className="grid-2 mb-3">
                     <div>
                       <label>WoD Title</label>

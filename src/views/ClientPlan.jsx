@@ -4,6 +4,7 @@ import {
   setDoc,
   updateDoc,
   deleteDoc,
+  getDocs,
   onSnapshot,
   collection,
   query,
@@ -29,9 +30,19 @@ import {
   describeResults,
 } from "../lib/resultFields";
 import { ResultFieldsEditor } from "../components/ResultFieldsEditor";
+import { ProgressPanel } from "../components/ProgressPanel";
+import { TemplateBar } from "../components/TemplateBar";
+import { entriesFromWorkouts } from "../lib/progress";
 
 // ─── CLIENT PLAN (a coach's private schedule for one client) ───────────────────
-export function ClientPlan({ client, profile, authUser, coachName, onBack }) {
+export function ClientPlan({
+  client,
+  profile,
+  authUser,
+  coachName,
+  allClients = [],
+  onBack,
+}) {
   const today = todayStr();
   const orgId = profile.orgId;
   const [workouts, setWorkouts] = useState([]);
@@ -42,6 +53,14 @@ export function ClientPlan({ client, profile, authUser, coachName, onBack }) {
   const [formErr, setFormErr] = useState("");
   const [confirmDel, setConfirmDel] = useState(false);
   const [savedNote, setSavedNote] = useState("");
+  const [showProgress, setShowProgress] = useState(false);
+  const [copyClient, setCopyClient] = useState("");
+  const [copyDate, setCopyDate] = useState("");
+  const [copyBusy, setCopyBusy] = useState(false);
+  const [copyMsg, setCopyMsg] = useState("");
+  const copyOptions = allClients.some((c) => c.id === client.id)
+    ? allClients
+    : [client, ...allClients];
 
   // Live: the coach sees a client's results the moment they are logged, and setup changes show up at once
   useEffect(() => {
@@ -215,6 +234,67 @@ export function ClientPlan({ client, profile, authUser, coachName, onBack }) {
       );
     }
     setSaving(false);
+  };
+
+  // Copies what is in the editor (without results) to another day and/or another client
+  const copySession = async () => {
+    setCopyMsg("");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(copyDate || "")) {
+      setCopyMsg("Pick a date to copy to.");
+      return;
+    }
+    if (editing.blocks.some((b) => !b.description.trim())) {
+      setCopyMsg("Every block needs a description before it can be copied.");
+      return;
+    }
+    const target =
+      copyOptions.find((c) => c.id === (copyClient || client.id)) || client;
+    setCopyBusy(true);
+    try {
+      const baseQ = [
+        where("orgId", "==", orgId),
+        where("clientId", "==", target.id),
+        where("date", "==", copyDate),
+      ];
+      const q =
+        profile.role === "coach"
+          ? query(
+              collection(db, "clientWorkouts"),
+              ...baseQ,
+              where("coachId", "==", authUser.uid),
+            )
+          : query(collection(db, "clientWorkouts"), ...baseQ);
+      const existing = await getDocs(q);
+      if (existing.size >= 2) {
+        setCopyMsg(`${target.name} already has 2 sessions on that day.`);
+        setCopyBusy(false);
+        return;
+      }
+      const blocks = editing.blocks.map((b) => ({
+        name: b.name,
+        description: b.description.trim(),
+        variables: b.variables || [],
+        sets: blockSets(b),
+        exercises: exercisesOf(b),
+      }));
+      await setDoc(doc(collection(db, "clientWorkouts")), {
+        date: copyDate,
+        title: (editing.title || "").trim(),
+        blocks,
+        orgId,
+        clientId: target.id,
+        coachId: target.coachId,
+        createdBy: authUser.uid,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      setCopyMsg(
+        `Copied to ${target.id === client.id ? "this client" : target.name} on ${formatDate(copyDate)}.`,
+      );
+    } catch {
+      setCopyMsg("Could not copy the session. Check your permissions and try again.");
+    }
+    setCopyBusy(false);
   };
 
   const del = async () => {
@@ -501,6 +581,30 @@ export function ClientPlan({ client, profile, authUser, coachName, onBack }) {
         </>
       )}
 
+      <div className="flex-between mt-4 mb-3">
+        <h4
+          style={{
+            fontFamily: "'Barlow Condensed',sans-serif",
+            fontSize: "1rem",
+            letterSpacing: "0.08em",
+            color: "#8a7a6a",
+          }}
+        >
+          PROGRESS
+        </h4>
+        <button
+          className="btn btn-ghost btn-sm"
+          onClick={() => setShowProgress((v) => !v)}
+        >
+          {showProgress ? "Hide" : "Show"}
+        </button>
+      </div>
+      {showProgress && (
+        <div className="card mb-4">
+          <ProgressPanel entries={entriesFromWorkouts(workouts)} />
+        </div>
+      )}
+
       {editing && (
         <div
           className="modal-overlay"
@@ -546,6 +650,74 @@ export function ClientPlan({ client, profile, authUser, coachName, onBack }) {
                   }}
                 >
                   {formErr}
+                </div>
+              )}
+              <TemplateBar
+                profile={profile}
+                authUser={authUser}
+                allowApply={!editing.id}
+                getCurrent={() => ({
+                  title: editing.title,
+                  blocks: editing.blocks,
+                })}
+                onApply={(t) =>
+                  setEditing((p) => ({
+                    ...p,
+                    title: p.title || t.title,
+                    blocks: t.blocks,
+                  }))
+                }
+              />
+              {editing.id && (
+                <div className="card mb-3" style={{ padding: "12px 14px" }}>
+                  <div
+                    className="muted small"
+                    style={{
+                      marginBottom: "8px",
+                      fontWeight: 700,
+                      textTransform: "uppercase",
+                      letterSpacing: "0.06em",
+                    }}
+                  >
+                    Copy this session
+                  </div>
+                  <div
+                    className="flex gap-2"
+                    style={{ flexWrap: "wrap", alignItems: "center" }}
+                  >
+                    <select
+                      aria-label="Copy to client"
+                      value={copyClient || client.id}
+                      onChange={(e) => setCopyClient(e.target.value)}
+                      style={{ width: "auto", minWidth: "170px", flex: "1 1 170px" }}
+                    >
+                      {copyOptions.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.id === client.id ? `${c.name} (this client)` : c.name}
+                        </option>
+                      ))}
+                    </select>
+                    <input
+                      type="date"
+                      aria-label="Copy to date"
+                      value={copyDate}
+                      onChange={(e) => setCopyDate(e.target.value)}
+                      style={{ width: "auto" }}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm"
+                      disabled={copyBusy}
+                      onClick={copySession}
+                    >
+                      {copyBusy ? "Copying…" : "Copy"}
+                    </button>
+                  </div>
+                  {copyMsg && (
+                    <p className="small mt-2" style={{ color: "#c8bfb0" }}>
+                      {copyMsg}
+                    </p>
+                  )}
                 </div>
               )}
               {workouts.some(

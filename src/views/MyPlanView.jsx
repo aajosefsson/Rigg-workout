@@ -22,6 +22,8 @@ import {
 import { fieldKeys, describeFields } from "../lib/resultFields";
 import { ResultInputs } from "../components/ResultInputs";
 import { SectionTitle } from "../components/SectionTitle";
+import { ProgressPanel } from "../components/ProgressPanel";
+import { entriesFromWorkouts } from "../lib/progress";
 
 // ─── MY PLAN (a client's own sessions and results) ─────────────────────────────
 export function MyPlanView({ profile, authUser, org }) {
@@ -36,6 +38,7 @@ export function MyPlanView({ profile, authUser, org }) {
   const [drafts, setDrafts] = useState({}); // `${sessionId}_${block}` -> {variable: value}
   const [savingKey, setSavingKey] = useState(null);
   const [saveErr, setSaveErr] = useState("");
+  const [showProgress, setShowProgress] = useState(false);
   const blockRefs = useRef([]);
   const jumped = useRef(false);
 
@@ -555,6 +558,30 @@ export function MyPlanView({ profile, authUser, org }) {
           <SectionTitle>RECENT SESSIONS</SectionTitle>
           {recent.slice(0, 8).map(sessionRow)}
         </>
+      )}
+
+      <div className="flex-between mt-4 mb-3">
+        <h4
+          style={{
+            fontFamily: "'Barlow Condensed',sans-serif",
+            fontSize: "1rem",
+            letterSpacing: "0.08em",
+            color: "#8a7a6a",
+          }}
+        >
+          MY PROGRESS
+        </h4>
+        <button
+          className="btn btn-ghost btn-sm"
+          onClick={() => setShowProgress((v) => !v)}
+        >
+          {showProgress ? "Hide" : "Show"}
+        </button>
+      </div>
+      {showProgress && (
+        <div className="card mb-4">
+          <ProgressPanel entries={entriesFromWorkouts(workouts)} />
+        </div>
       )}
     </div>
   );

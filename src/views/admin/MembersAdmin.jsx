@@ -1,7 +1,9 @@
 import { useState } from "react";
+import { ClassProgress } from "../../components/ClassProgress";
 
 // ─── MEMBERS ADMIN ─────────────────────────────────────────────────────────────
-export function MembersAdmin({ memberRoster, editMemberRoster }) {
+export function MembersAdmin({ memberRoster, editMemberRoster, allWorkouts }) {
+  const [progressFor, setProgressFor] = useState(null);
   const [newName, setNewName] = useState("");
   const [confirmDel, setConfirmDel] = useState(null);
   const [editingName, setEditingName] = useState(null);
@@ -221,6 +223,13 @@ export function MembersAdmin({ memberRoster, editMemberRoster }) {
                   <>
                     <button
                       className="btn btn-ghost btn-xs"
+                      onClick={() => setProgressFor(name)}
+                      title={`Progress for ${name}`}
+                    >
+                      Progress
+                    </button>
+                    <button
+                      className="btn btn-ghost btn-xs"
                       onClick={() => startEdit(name)}
                       style={{ color: "#c8bfb0" }}
                     >
@@ -248,6 +257,32 @@ export function MembersAdmin({ memberRoster, editMemberRoster }) {
               )}
             </div>
           ))}
+        </div>
+      )}
+
+      {progressFor && (
+        <div
+          className="modal-overlay"
+          onClick={(e) => e.target === e.currentTarget && setProgressFor(null)}
+        >
+          <div className="modal-inner">
+            <div className="modal-header flex-between">
+              <h3 style={{ color: "#FF6B1A" }}>Progress · {progressFor}</h3>
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={() => setProgressFor(null)}
+              >
+                Close
+              </button>
+            </div>
+            <div className="modal-body">
+              <ClassProgress
+                key={progressFor}
+                member={progressFor}
+                allWorkouts={allWorkouts}
+              />
+            </div>
+          </div>
         </div>
       )}
     </div>
